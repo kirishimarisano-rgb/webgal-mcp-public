@@ -8,7 +8,6 @@ import {
   inspectTerre,
   normalizeTerreUrl,
   previewUrl,
-  type TerreInspection,
 } from '../src/terre.js';
 import { LIMITS, type ProjectConfig } from '../src/types.js';
 
@@ -98,6 +97,7 @@ describe('inspectTerre', () => {
 
     expect(result).toEqual({
       reachable: false,
+      connectionStatus: 'not_configured',
       compatibility: 'unknown',
       capabilities: {
         apiTest: 'unknown',
@@ -106,6 +106,7 @@ describe('inspectTerre', () => {
         preview: 'unknown',
       },
       mappingVerified: false,
+      mappingStatus: 'unverified',
       version: 'unknown',
     });
   });
@@ -141,6 +142,7 @@ describe('inspectTerre', () => {
 
     expect(result).toMatchObject({
       reachable: true,
+      connectionStatus: 'responded',
       compatibility: 'unknown',
       capabilities: {
         apiTest: 'available',
@@ -149,6 +151,7 @@ describe('inspectTerre', () => {
         preview: 'unknown',
       },
       mappingVerified: true,
+      mappingStatus: 'verified',
       version: 'unknown',
     });
     expect(server.requests).toEqual([
@@ -181,6 +184,7 @@ describe('inspectTerre', () => {
 
     expect(result.capabilities.readGameAssets).toBe('unavailable');
     expect(result.capabilities.preview).toBe('unavailable');
+    expect(result.mappingStatus).toBe('not_configured');
     expect(server.requests).toEqual(['/api/test', '/api-json']);
   });
 
@@ -302,6 +306,7 @@ describe('inspectTerre', () => {
 
     expect(result.capabilities.readGameAssets).toBe('unavailable');
     expect(result.mappingVerified).toBe(false);
+    expect(result.mappingStatus).toBe('unverified');
     expect(result.compatibility).toBe('incompatible');
   });
 
@@ -334,10 +339,21 @@ describe('inspectTerre', () => {
     },
   );
 
-  it('rejects a scene dirPath that does not match the project root', async () => {
+  it.each([
+    { directory: 'other', readDirPath: 'demo/game/scene', expected: 'mismatch' },
+    { directory: 'current', readDirPath: 'other/game/scene', expected: 'mismatch' },
+    { directory: 'missing', readDirPath: 'demo/game/scene', expected: 'unverified' },
+    { directory: 'relative', readDirPath: 'demo/game/scene', expected: 'unverified' },
+  ] as const)('reports $expected for $directory directory and $readDirPath', async ({ directory, readDirPath, expected }) => {
     const root = await createProjectRoot();
     const otherRoot = await createProjectRoot();
     const gameDir = 'demo';
+    const directories = {
+      other: join(otherRoot, 'game', 'scene'),
+      current: join(root, 'game', 'scene'),
+      missing: join(root, 'missing'),
+      relative: 'game/scene',
+    };
     const server = await startServer((request, response) => {
       const path = requestPath(request.url);
       if (path === '/api/test') {
@@ -349,8 +365,8 @@ describe('inspectTerre', () => {
         `/api/manageGame/readGameAssets/${encodeURIComponent(gameDir)}/game/scene`
       ) {
         sendJson(response, 200, {
-          readDirPath: `${gameDir}/game/scene`,
-          dirPath: join(otherRoot, 'game', 'scene'),
+          readDirPath,
+          dirPath: directories[directory],
           dirInfo: [],
         });
       } else {
@@ -362,6 +378,7 @@ describe('inspectTerre', () => {
 
     expect(result.capabilities.readGameAssets).toBe('available');
     expect(result.mappingVerified).toBe(false);
+    expect(result.mappingStatus).toBe(expected);
     expect(result.compatibility).toBe('unknown');
   });
 
@@ -402,6 +419,8 @@ describe('inspectTerre', () => {
     });
 
     expect(result.reachable).toBe(false);
+    expect(result.connectionStatus).toBe('no_response');
+    expect(result.mappingStatus).toBe('not_configured');
     expect(result.capabilities.apiTest).toBe('unavailable');
     expect(result.compatibility).toBe('unknown');
   });

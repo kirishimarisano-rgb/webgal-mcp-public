@@ -11,6 +11,8 @@ const LOOPBACK_ROOT_URL =
 
 export type TerreCapabilityState = 'available' | 'unavailable' | 'unknown';
 export type TerreCompatibility = 'compatible' | 'incompatible' | 'unknown';
+export type TerreConnectionStatus = 'not_configured' | 'no_response' | 'responded';
+export type TerreMappingStatus = 'not_configured' | 'unverified' | 'mismatch' | 'verified';
 
 export interface TerreCapabilities {
   apiTest: TerreCapabilityState;
@@ -21,9 +23,11 @@ export interface TerreCapabilities {
 
 export interface TerreInspection {
   reachable: boolean;
+  connectionStatus: TerreConnectionStatus;
   compatibility: TerreCompatibility;
   capabilities: TerreCapabilities;
   mappingVerified: boolean;
+  mappingStatus: TerreMappingStatus;
   version: 'unknown';
 }
 
@@ -87,26 +91,24 @@ export function normalizeTerreUrl(input: string): string {
 export async function inspectTerre(project: ProjectConfig): Promise<TerreInspection> {
   const hasMapping = Boolean(project.terreGameDir?.trim());
   const capabilities = initialCapabilities(hasMapping);
+  let mappingStatus: TerreMappingStatus = hasMapping ? 'unverified' : 'not_configured';
 
   if (!project.terreUrl?.trim()) {
-    return inspectionResult(false, capabilities, false);
+    return inspectionResult('not_configured', capabilities, mappingStatus);
   }
 
   const baseUrl = normalizeTerreUrl(project.terreUrl);
-  let reachable = false;
 
   let apiTestResponse: HttpTextResponse;
   try {
     apiTestResponse = await getText(baseUrl, '/api/test');
-    reachable = true;
   } catch (error) {
     const responded = error instanceof TerreRequestError && error.responded;
-    reachable = responded;
     capabilities.apiTest = 'unavailable';
     return inspectionResult(
-      reachable,
+      responded ? 'responded' : 'no_response',
       capabilities,
-      false,
+      mappingStatus,
       responded ? 'incompatible' : 'unknown',
     );
   }
@@ -125,7 +127,6 @@ export async function inspectTerre(project: ProjectConfig): Promise<TerreInspect
     capabilities.openApi = 'unavailable';
   }
 
-  let mappingVerified = false;
   if (hasMapping) {
     const encodedGameDir = encodeURIComponent(project.terreGameDir!);
     try {
@@ -140,7 +141,7 @@ export async function inspectTerre(project: ProjectConfig): Promise<TerreInspect
         capabilities.readGameAssets = 'unavailable';
       } else {
         capabilities.readGameAssets = 'available';
-        mappingVerified = await verifySceneMapping(project, listing);
+        mappingStatus = await checkSceneMapping(project, listing);
       }
     } catch {
       capabilities.readGameAssets = 'unavailable';
@@ -154,9 +155,9 @@ export async function inspectTerre(project: ProjectConfig): Promise<TerreInspect
     requiredApisOk && readAssetsOk ? 'unknown' : 'incompatible';
 
   return inspectionResult(
-    reachable,
+    'responded',
     capabilities,
-    mappingVerified,
+    mappingStatus,
     compatibility,
   );
 }
@@ -190,16 +191,18 @@ function initialCapabilities(hasMapping: boolean): TerreCapabilities {
 }
 
 function inspectionResult(
-  reachable: boolean,
+  connectionStatus: TerreConnectionStatus,
   capabilities: TerreCapabilities,
-  mappingVerified: boolean,
+  mappingStatus: TerreMappingStatus,
   compatibility: TerreCompatibility = 'unknown',
 ): TerreInspection {
   return {
-    reachable,
+    reachable: connectionStatus === 'responded',
+    connectionStatus,
     compatibility,
     capabilities,
-    mappingVerified,
+    mappingVerified: mappingStatus === 'verified',
+    mappingStatus,
     version: 'unknown',
   };
 }
@@ -324,16 +327,16 @@ function parseReadGameAssets(body: string): ReadGameAssetsResponse | undefined {
   };
 }
 
-async function verifySceneMapping(
+async function checkSceneMapping(
   project: ProjectConfig,
   listing: ReadGameAssetsResponse,
-): Promise<boolean> {
+): Promise<TerreMappingStatus> {
+  if (!isAbsolute(listing.dirPath) || !listing.readDirPath.trim()) {
+    return 'unverified';
+  }
   const expectedReadDirPath = `${project.terreGameDir}/game/scene`;
   if (listing.readDirPath.replaceAll('\\', '/') !== expectedReadDirPath.replaceAll('\\', '/')) {
-    return false;
-  }
-  if (!isAbsolute(listing.dirPath)) {
-    return false;
+    return 'mismatch';
   }
 
   const expectedPath = resolve(project.root, 'game', 'scene');
@@ -343,11 +346,11 @@ async function verifySceneMapping(
       realpath(resolve(listing.dirPath)),
     ]);
     if (!samePath(expectedRealPath, actualRealPath)) {
-      return false;
+      return 'mismatch';
     }
-    return (await stat(expectedRealPath)).isDirectory();
+    return (await stat(expectedRealPath)).isDirectory() ? 'verified' : 'unverified';
   } catch {
-    return false;
+    return 'unverified';
   }
 }
 

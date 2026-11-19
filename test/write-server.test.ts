@@ -334,6 +334,21 @@ describe('P3 real stdio write server', () => {
 
   it('rejects missing and not-ready handshakes and keeps draft plans non-committable', async () => {
     const before = await snapshot(project);
+    const status = await call(client, 'webgal_status', { projectId: 'test' });
+    expect(status.response.isError).not.toBe(true);
+    expect(status.data).toMatchObject({
+      stage: 'P3',
+      readOnly: false,
+      projectFiles: { readable: true },
+      terre: { connectionStatus: 'responded', mappingStatus: 'verified' },
+      writeToolsEnabled: true,
+      writable: false,
+      handoffRequired: true,
+      editorState: 'unknown',
+    });
+    expect(status.data.nextSteps.at(-1)).toContain('成功保存、关闭该工程的所有编辑页，再明确确认本批交接');
+    expect(await pathExists(stateRoot)).toBe(false);
+
     const missingDecision = await call(client, 'write_session_begin', {
       projectId: 'test',
       paths: ['game/scene/start.txt'],
@@ -911,6 +926,8 @@ describe('P3 real stdio write server', () => {
     client = reconnected.client;
     stderr = reconnected.stderr();
 
+    const status = await call(client, 'webgal_status', { projectId: 'test' });
+    expect(status.data).toMatchObject({ writeToolsEnabled: true, writable: false, handoffRequired: true });
     const inspection = await call(client, 'recovery_inspect', {
       projectId: 'test'
     });
