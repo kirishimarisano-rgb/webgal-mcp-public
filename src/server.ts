@@ -13,7 +13,7 @@ const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint
 
 export function createServer(config: AppConfig, options: WriteToolOptions = {}) {
   config = structuredClone(config);
-  const server = new McpServer({ name: 'webgal-mcp', version: '0.1.0' });
+  const server = new McpServer({ name: 'webgal-mcp', version: '0.2.0' });
   const service = new ReadService(config);
   const writeToolsEnabled = Boolean(options.stateRoot);
   async function result(operation: () => unknown | Promise<unknown>) {

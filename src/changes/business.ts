@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises';
 import { TextDecoder } from 'node:util';
 import { z } from 'zod';
 import { analyzeScene, parseGameConfig, type Diagnostic } from '../analysis.js';
-import { readSource } from '../assets/source.js';
+import { describeAssetSource, readSource } from '../assets/source.js';
 import { getProject } from '../config.js';
 import { editGameConfig, type ConfigUpdate } from '../edits/config.js';
 import { applySceneEdits, createScene, type TextEdit } from '../edits/scenes.js';
@@ -11,11 +11,12 @@ import { AppError } from '../errors.js';
 import { resolveSafe, validateRelativePath } from '../filesystem.js';
 import type { AppConfig, ProjectConfig } from '../types.js';
 import type { WriteCoordinator } from './coordinator.js';
-import { assertReferenceableTarget, snapshotTarget } from './targets.js';
+import { assertCreateTargetAbsent, assertReferenceableTarget, snapshotTarget } from './targets.js';
 import {
+  LARGE_ASSET_LIMITS,
   WRITE_LIMITS,
   type ApplyResult,
-  type ChangeInput,
+  type CoordinatorChange,
   type SourceRevision,
   type WritePlan
 } from './types.js';
@@ -372,11 +373,12 @@ export class BusinessWriteService {
         : projectFileExists(project, relative)
     );
     const seenTargets = new Set<string>();
-    const changes: ChangeInput[] = [];
+    const changes: CoordinatorChange[] = [];
     const sourceRevisions: SourceRevision[] = [];
     const reviewOperations: BusinessReviewOperation[] = [];
     const diagnostics: BusinessReviewDiagnostic[] = [];
     let totalBytes = 0;
+    let streamedBytes = 0;
 
     for (const operation of normalized) {
       const path = targetPath(operation);
@@ -391,36 +393,49 @@ export class BusinessWriteService {
         if (sourcePath === '') {
           invalidArgument('Asset source paths must be non-empty relative paths.');
         }
-        const source = await readSource(this.config, operation.sourceId, sourcePath);
-        if (source.revision !== operation.expectedSourceRevision) {
+        const description = await describeAssetSource(this.config, operation.sourceId, sourcePath);
+        if (description.revision !== operation.expectedSourceRevision) {
           throw new AppError('SOURCE_CHANGED', 'An asset source changed after it was reviewed.');
         }
-        if (source.bytes.byteLength > WRITE_LIMITS.maxFileBytes) {
-          throw new AppError('FILE_TOO_LARGE', 'The imported asset exceeds the size limit.');
-        }
-        const current = await snapshotTarget(project.root, path);
-        if (current.revision !== null) {
-          throw new AppError('TARGET_EXISTS', 'The imported asset target already exists.');
-        }
-        const bytes = Buffer.from(source.bytes);
-        totalBytes += bytes.byteLength;
-        changes.push({ path, expectedRevision: null, bytes });
-        sourceRevisions.push({
+        const sourceIdentity: SourceRevision = {
           sourceId: operation.sourceId,
           path: sourcePath,
-          revision: source.revision,
-          rootKey: source.rootKey
-        });
+          revision: description.revision,
+          rootKey: description.rootKey,
+        };
+        if (description.bytes > WRITE_LIMITS.maxFileBytes) {
+          if (operation.kind !== 'background' && operation.kind !== 'bgm') {
+            throw new AppError('FILE_TOO_LARGE', 'Only backgrounds and BGM support large asset imports.');
+          }
+          streamedBytes += description.bytes;
+          if (streamedBytes > LARGE_ASSET_LIMITS.maxBatchBytes) {
+            throw new AppError('LIMIT_EXCEEDED', 'Large assets exceed the streaming batch limit.');
+          }
+          await assertCreateTargetAbsent(project.root, path);
+          changes.push({ path, expectedRevision: null, source: { ...sourceIdentity, bytes: description.bytes } });
+        } else {
+          const source = await readSource(this.config, operation.sourceId, sourcePath);
+          if (source.revision !== description.revision || source.rootKey !== description.rootKey) {
+            throw new AppError('SOURCE_CHANGED', 'An asset source changed after it was reviewed.');
+          }
+          const current = await snapshotTarget(project.root, path);
+          if (current.revision !== null) {
+            throw new AppError('TARGET_EXISTS', 'The imported asset target already exists.');
+          }
+          totalBytes += source.bytes.byteLength;
+          changes.push({ path, expectedRevision: null, bytes: source.bytes });
+          sourceRevisions.push(sourceIdentity);
+        }
         reviewOperations.push({
           type: operation.type,
           path,
           beforeRevision: null,
-          afterRevision: hash(bytes),
-          bytes: bytes.byteLength,
+          afterRevision: description.revision,
+          bytes: description.bytes,
           kind: operation.kind,
           sourceId: operation.sourceId,
           sourcePath,
-          sourceRevision: source.revision
+          sourceRevision: description.revision
         });
         continue;
       }
@@ -504,7 +519,7 @@ export class BusinessWriteService {
       throw new AppError('LIMIT_EXCEEDED', 'The business batch exceeds the configured byte limit.');
     }
     for (const change of changes) {
-      if (change.bytes.byteLength > WRITE_LIMITS.maxFileBytes) {
+      if ('bytes' in change && change.bytes.byteLength > WRITE_LIMITS.maxFileBytes) {
         throw new AppError('FILE_TOO_LARGE', 'A business operation exceeds the file size limit.');
       }
     }
