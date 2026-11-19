@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,7 +22,7 @@ describe('coordinator state integrity', () => {
   let config: AppConfig;
 
   beforeEach(async () => {
-    base = await mkdtemp(path.join(tmpdir(), 'wgmcp-safety-'));
+    base = await realpath(await mkdtemp(path.join(tmpdir(), 'wgmcp-safety-')));
     root = path.join(base, 'project');
     await mkdir(path.join(root, 'game', 'scene'), { recursive: true });
     await writeFile(path.join(root, target), 'original');

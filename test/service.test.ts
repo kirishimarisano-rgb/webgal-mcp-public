@@ -1,12 +1,12 @@
 import { beforeEach, afterEach, expect, it } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { ReadService } from '../src/service.js';
 let root: string;
 let service: ReadService;
 beforeEach(async () => {
-  root = await mkdtemp(path.join(os.tmpdir(), 'webgal-mcp-service-'));
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'webgal-mcp-service-')));
   await mkdir(path.join(root, 'game/scene'), { recursive: true });
   await writeFile(path.join(root, 'game/config.txt'), '');
   service = new ReadService({ version: 1, projects: [{ id: 'test', root }], sources: [] });
