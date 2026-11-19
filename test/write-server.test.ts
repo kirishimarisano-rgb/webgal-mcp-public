@@ -308,6 +308,7 @@ describe('P3 real stdio write server', () => {
         'preview_get_url',
         'project_inspect',
         'project_list',
+        'project_scan',
         'scene_list',
         'scene_read',
         'scene_validate',
@@ -318,7 +319,7 @@ describe('P3 real stdio write server', () => {
     }
 
     const writeTools = (await client.listTools()).tools.map((tool) => tool.name);
-    expect(writeTools).toHaveLength(18);
+    expect(writeTools).toHaveLength(19);
     expect(writeTools).toEqual(expect.arrayContaining([
       'asset_source_list',
       'asset_source_inspect',

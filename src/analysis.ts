@@ -206,7 +206,12 @@ export async function analyzeScene(
   text: string,
   scenePath: string,
   exists: (projectRelativePath: string) => Promise<boolean>,
+  { checkpoint, onResponseTruncated }: {
+    checkpoint?: () => void;
+    onResponseTruncated?: () => void;
+  } = {},
 ): Promise<SceneAnalysis> {
+  checkpoint?.();
   ensureTextWithinLimit(text, 'Scene text');
   if (typeof exists !== 'function') {
     throw new AppError('INVALID_ARGUMENT', 'exists must be a function.');
@@ -229,10 +234,12 @@ export async function analyzeScene(
   const existenceCache = new Map<string, Promise<boolean>>();
 
   for (const sentence of sentences) {
+    checkpoint?.();
     const startLine = sentence.startLine + 1;
     const endLine = sentence.endLine + 1;
     const rawContent = rawSentenceContent(sceneLines, sentence);
     for (const asset of sentence.sentenceAssets) {
+      checkpoint?.();
       const kind = assetKind(asset.type);
       await classifyAndRecordReference(
         asset.url,
@@ -249,6 +256,7 @@ export async function analyzeScene(
     }
 
     for (const subScene of sentence.subScene) {
+      checkpoint?.();
       await classifyAndRecordReference(
         subScene,
         'scene',
@@ -330,6 +338,7 @@ export async function analyzeScene(
     }
   }
 
+  checkpoint?.();
   const limitations = [
     'Static analysis only; a successful parse does not prove the scene will run.',
     'Remote URLs are not fetched and are reported as unresolved.',
@@ -368,7 +377,7 @@ export async function analyzeScene(
     'diagnostics',
     'staticReferences',
     'unresolvedReferences',
-  ]);
+  ], onResponseTruncated);
 }
 
 export function parseGameConfig(text: string): ConfigAnalysis {
@@ -825,11 +834,13 @@ function sanitizeConfigValue(
 function enforceResponseLimit<T extends object>(
   result: T,
   arrayKeys: string[],
+  onTruncate?: () => void,
 ): T {
   if (Buffer.byteLength(JSON.stringify(result), 'utf8') <= LIMITS.responseBytes) {
     return result;
   }
 
+  onTruncate?.();
   const record = result as Record<string, unknown>;
   const limitations = record.limitations;
   if (
