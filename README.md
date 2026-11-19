@@ -73,7 +73,7 @@ codex mcp list
 ## 打不开时先检查这两处
 
 - **Codex 看不到 `webgal`：** 用 `codex mcp list` 检查登记情况，确认 `npm run build` 成功，再重启 Codex。
-- **能读文件但连不到 Terre：** 确认 Terre 在运行、端口正确，并核对 `root` 和 `terreGameDir` 是否指向同一个工程。
+- **Codex 已看到 `webgal`，但工程读不到或 Terre 连不上：** 让 Codex 对你的工程运行 `webgal_status`（例如传入 `projectId: "my-game"`），按返回的 `nextSteps` 排查。改了本机配置后，重启 MCP 连接再检查。
 
 已验证 Windows + Codex + Terre。源码按 [PolyForm Noncommercial 1.0.0](LICENSE) 提供，限制商业使用；第三方依赖适用各自的许可证。
 

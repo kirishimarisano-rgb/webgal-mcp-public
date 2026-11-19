@@ -3,8 +3,8 @@ import { stat } from 'node:fs/promises';
 import { getProject } from './config.js';
 import { listFiles, readText, resolveSafe, validateRelativePath } from './filesystem.js';
 import { analyzeScene, parseGameConfig } from './analysis.js';
-import { inspectTerre, previewUrl } from './terre.js';
-import { AppError } from './errors.js';
+import { inspectTerre, previewUrl, type TerreInspection } from './terre.js';
+import { AppError, publicError } from './errors.js';
 import { LIMITS, type AppConfig, type ProjectConfig } from './types.js';
 
 export interface PageInput { cursor?: string; limit?: number }
@@ -44,16 +44,91 @@ async function directory(root: string, relative: string) {
   if (!(await stat(await resolveSafe(root, relative))).isDirectory()) throw new AppError('FILE_NOT_DIRECTORY', 'The required project directory is not a directory.');
 }
 
+async function readProjectConfig(project: ProjectConfig) {
+  await directory(project.root, 'game/scene');
+  return readText(project.root, 'game/config.txt');
+}
+
+async function checkProjectFiles(project: ProjectConfig) {
+  try {
+    await readProjectConfig(project);
+    return { readable: true as const };
+  } catch (error) {
+    return { readable: false as const, errorCode: publicError(error).code };
+  }
+}
+
+function projectFileNextStep(errorCode: string): string {
+  switch (errorCode) {
+    case 'FILE_NOT_FOUND':
+    case 'FILE_NOT_DIRECTORY':
+    case 'FILE_NOT_REGULAR':
+    case 'PROJECT_NOT_AUTHORIZED':
+    case 'PATH_INVALID':
+    case 'PATH_OUTSIDE_PROJECT':
+      return '核对 root 是否指向包含 game/scene 和 game/config.txt 的工程目录，并确认两者都在授权工程内。';
+    case 'UNSUPPORTED_FORMAT':
+      return '确认 game/config.txt 使用 UTF-8 编码，再运行 webgal_status。';
+    case 'FILE_TOO_LARGE':
+      return '确认 game/config.txt 是该工程的配置文件，且大小在 1 MiB 读取上限内。';
+    case 'FILE_CHANGED':
+      return '等文件修改完成后，再运行 webgal_status。';
+    default:
+      return '确认 MCP 进程能访问 game/scene 并读取 game/config.txt，再运行 webgal_status。';
+  }
+}
+
+function terreNextStep(terre: TerreInspection): string | undefined {
+  if (terre.connectionStatus === 'not_configured') {
+    return '如需连接 Terre，将 terreUrl 设为本机 Terre 的 HTTP 地址，将 terreGameDir 设为工程的实际文件夹名。';
+  }
+  if (terre.connectionStatus === 'no_response') {
+    return '未收到 HTTP 响应。确认 Terre 是否已启动，以及 terreUrl 的端口是否与它一致。';
+  }
+  if (terre.capabilities.apiTest !== 'available' || terre.capabilities.openApi !== 'available') {
+    return '配置的端口有响应，但未能核对 Terre API。确认 terreUrl 指向正在运行的 Terre，并检查其 API 是否受支持。';
+  }
+  if (terre.mappingStatus === 'not_configured') {
+    return '将 terreGameDir 设为 Terre 中该工程的实际文件夹名。';
+  }
+  if (terre.mappingStatus === 'mismatch') {
+    return 'Terre 返回的场景目录与本机工程不匹配。核对 root 和 terreGameDir 是否指向同一个工程。';
+  }
+  if (terre.mappingStatus === 'unverified') {
+    return '未能验证工程映射。核对 terreGameDir 的实际文件夹名，并确认 Terre 和 MCP 都能访问该工程。';
+  }
+}
+
 export class ReadService {
   constructor(private readonly config: AppConfig) {}
   async status(projectId?: string) {
-    return { stage: 'P1', readOnly: true, writable: false, editorState: 'unknown', projectCount: this.config.projects.length, ...(projectId ? { terre: await inspectTerre(getProject(this.config, projectId)) } : {}) };
+    const status = { stage: 'P1', readOnly: true, writable: false, editorState: 'unknown', projectCount: this.config.projects.length };
+    if (!projectId) {
+      const nextStep = status.projectCount > 0
+        ? '用 project_list 找到工程 ID，再将它作为 projectId 运行 webgal_status。'
+        : '在本机配置中登记一个工程，再重启 MCP 连接。';
+      return { ...status, nextSteps: [nextStep] };
+    }
+
+    const project = getProject(this.config, projectId);
+    const [projectFiles, terre] = await Promise.all([checkProjectFiles(project), inspectTerre(project)]);
+    const nextSteps = projectFiles.readable ? [] : [projectFileNextStep(projectFiles.errorCode)];
+    const terreStep = terreNextStep(terre);
+    if (terreStep) nextSteps.push(terreStep);
+    if (!projectFiles.readable || terreStep) {
+      nextSteps.push('如有修改本机配置，重启 MCP 连接后再运行 webgal_status。');
+    }
+    if (projectFiles.readable) {
+      nextSteps.push(terreStep
+        ? '本机文件基础检查已通过。可以用 scene_list 选择场景，再用 scene_read 读取。'
+        : '可用 scene_list 和 scene_read 读取场景，或用 preview_get_url 获取链接后在 Terre 中验证游戏运行。');
+    }
+    return { ...status, projectFiles, terre, nextSteps };
   }
   projects(input: PageInput) { return page(this.config.projects.map(p => ({ id: p.id, name: p.name ?? p.id })), 'projects', input); }
   async inspect(projectId: string) {
     const project = getProject(this.config, projectId);
-    await directory(project.root, 'game/scene');
-    const document = await readText(project.root, 'game/config.txt');
+    const document = await readProjectConfig(project);
     return { id: project.id, name: project.name ?? project.id, projectType: await exists(project.root, 'index.html') ? 'custom-engine' : 'content-only', entryExists: await exists(project.root, 'game/scene/start.txt'), configRevision: document.revision, config: parseGameConfig(document.text), terre: await inspectTerre(project), readOnly: true };
   }
   async scenes(projectId: string, input: PageInput) {

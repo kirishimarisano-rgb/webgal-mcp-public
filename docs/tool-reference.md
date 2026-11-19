@@ -22,7 +22,7 @@ CLI 通过 stdio（标准输入输出）与客户端通信。直接在终端启�
 
 | 工具 | 用途 |
 | --- | --- |
-| `webgal_status` | 只读状态、阶段、可选的本机 Terre 能力核对；编辑器未保存状态始终未知 |
+| `webgal_status` | 传入 `projectId` 检查本机工程、Terre 连接和工程映射，并给出下一步操作 |
 | `project_list` | 只列本地配置登记的工程 |
 | `project_inspect` | 工程类型、入口、配置摘要、Terre 映射核对 |
 | `scene_list` | 递归列出场景并分页；返回路径相对于 `game/scene` |
@@ -31,6 +31,13 @@ CLI 通过 stdio（标准输入输出）与客户端通信。直接在终端启�
 | `asset_list` | 列出背景、立绘、BGM、语音、视频、动画目录的既有文件元数据 |
 | `game_config_read` | `game/config.txt` 原文、版本及解析摘要 |
 | `preview_get_url` | 返回配置对应的官方预览 URL；不打开浏览器、不遥控、不证明游戏已运行 |
+
+排查连接时，先运行 `webgal_status` 并查看 `nextSteps`。省略 `projectId` 可查看全局状态和如何选择工程。若 MCP 因配置无效而无法启动，先检查本机配置格式、`root` 是否为现有目录，以及 `terreUrl` 是否为 HTTP loopback 根地址。
+
+- `projectFiles.readable` 表示 `game/scene` 目录检查和 `game/config.txt` 读取都通过。失败时有 `errorCode`，仍可查看 Terre 结果。
+- `terre.connectionStatus` 区分 `not_configured`（未配置）、`no_response`（未收到 HTTP 响应）和 `responded`（收到响应）。收到响应后还需看 `capabilities` 是否核对通过。未收到响应时，需核对 Terre 是否在运行及配置端口是否正确。
+- `terre.mappingStatus` 区分 `not_configured`（未配置）、`unverified`（证据不足）、`mismatch`（确认目录不匹配）和 `verified`（已核对一致）。实际预览、运行和导出由用户在 Terre 检查。
+- `writeToolsEnabled` 表示是否启用了写入工具。`handoffRequired` 表示每批写入都需要人工交接。检查不查询当前会话，编辑器的未保存状态仍为 `unknown`。
 
 分页参数是 `limit`（1–100）和 `cursor`。文件列表变化或 cursor 不匹配时重新开始列表。工具业务错误使用 `isError=true` 与错误码；参数 schema 错误由 SDK 报告。
 
