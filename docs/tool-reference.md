@@ -32,7 +32,7 @@ CLI 通过 stdio（标准输入输出）与客户端通信。直接在终端启�
 | `game_config_read` | `game/config.txt` 原文、版本及解析摘要 |
 | `preview_get_url` | 返回配置对应的官方预览 URL；不打开浏览器、不遥控、不证明游戏已运行 |
 
-排查连接时，先运行 `webgal_status` 并查看 `nextSteps`。省略 `projectId` 可查看全局状态和如何选择工程。若 MCP 因配置无效而无法启动，先检查本机配置格式、`root` 是否为现有目录，以及 `terreUrl` 是否为 HTTP loopback 根地址。
+排查连接时，先运行 `webgal_status` 并查看 `nextSteps`。省略 `projectId` 可查看全局状态和如何选择工程。
 
 - `projectFiles.readable` 表示 `game/scene` 目录检查和 `game/config.txt` 读取都通过。失败时有 `errorCode`，仍可查看 Terre 结果。
 - `terre.connectionStatus` 区分 `not_configured`（未配置）、`no_response`（未收到 HTTP 响应）和 `responded`（收到响应）。收到响应后还需看 `capabilities` 是否核对通过。未收到响应时，需核对 Terre 是否在运行及配置端口是否正确。
@@ -42,6 +42,19 @@ CLI 通过 stdio（标准输入输出）与客户端通信。直接在终端启�
 分页参数是 `limit`（1–100）和 `cursor`。文件列表变化或 cursor 不匹配时重新开始列表。工具业务错误使用 `isError=true` 与错误码；参数 schema 错误由 SDK 报告。
 
 `asset_list` 汇总时用 `missingKinds` 明确列出不存在的可选素材目录；指定不存在的 kind 会报错，不把缺失目录当作空目录。
+
+## 连接与试改排查
+
+| 看到什么 | 检查哪里 | 怎么重试 |
+| --- | --- | --- |
+| Codex 看不到 `webgal`，或 MCP 启动报错 | 用 `codex mcp list` 核对登记，确认 `npm run build` 成功且 `--config` 指向有效 JSON。工程 `root` 要存在，`terreUrl` 和 `terreGameDir` 如使用须一起配置，地址须为本机 HTTP loopback 根地址。 | 修正后重启 Codex，再运行 `webgal_status`。 |
+| `projectFiles.readable: false` | 看 `projectFiles.errorCode` 和 `nextSteps`。检查 `root` 下是否有 `game/scene` 与可读的 UTF-8 `game/config.txt`。 | 改过本机配置时先重启 MCP，再检查该工程。 |
+| `connectionStatus: no_response`，或有响应但 API 检查失败 | 核对 Terre 是否在运行、`terreUrl` 的端口是否正确，以及该端口返回的是否为 Terre API。 | 地址更改后重启 MCP，再运行 `webgal_status`。如果本机文件可读，也可以先继续只读练习。 |
+| `mappingStatus: mismatch` 或 `unverified` | 核对 `root` 和 `terreGameDir` 是否对应同一个工程，并确认 Terre 和 MCP 均可访问。目录名使用实际文件夹名。 | 改过配置后重启 MCP，再检查。试改前等映射为 `verified`，并确认 `apiTest`、`openApi` 和 `readGameAssets` 均为 `available`。 |
+| `writeToolsEnabled: false` | 检查 MCP 启动参数是否有 `--state-root` 和独立状态目录。 | 更新参数后重启 MCP，再确认 `writeToolsEnabled` 为 `true`。 |
+| `HANDOFF_REQUIRED` 或 `SESSION_EXPIRED` | 确认本批已经在 Terre 保存、关闭该工程的编辑页，并由用户明确交接。 | 重新交接，生成新计划并再次确认后再应用。 |
+| 生成计划时出现 `REVISION_CONFLICT` | 重新读取目标文件，核对后来保存的内容。 | 按当前内容重新交接和生成计划，核对改动后再应用。 |
+| 应用失败、部分完成、结果不确定或回执丢失 | 保留 `planId`，先用 `recovery_inspect` 查看实际磁盘和批次状态。 | 确认结果后再决定是否重新交接并生成新计划。 |
 
 ## 限制与数据边界
 
