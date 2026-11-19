@@ -106,9 +106,9 @@ afterAll(async () => {
   if (temporary) await rm(temporary, { recursive: true, force: true });
 });
 describe('P1 real stdio read-only tool surface', () => {
-  it('exposes exactly nine read tools and no mutation surface', async () => {
+  it('exposes exactly ten read tools and no mutation surface', async () => {
     const tools = (await client.listTools()).tools;
-    expect(tools.map(t => t.name).sort()).toEqual(['webgal_status', 'project_list', 'project_inspect', 'scene_list', 'scene_read', 'scene_validate', 'asset_list', 'game_config_read', 'preview_get_url'].sort());
+    expect(tools.map(t => t.name).sort()).toEqual(['webgal_status', 'project_list', 'project_inspect', 'project_scan', 'scene_list', 'scene_read', 'scene_validate', 'asset_list', 'game_config_read', 'preview_get_url'].sort());
     expect(tools.every(t => t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint === false)).toBe(true);
     const status = await call('webgal_status');
     expect(status.data).toMatchObject({
@@ -155,6 +155,22 @@ describe('P1 real stdio read-only tool surface', () => {
     expect(JSON.stringify(analyzed.data)).toContain('missing.png');
     expect(await snapshot(project)).toBe(before);
     expect(stderr).toBe('');
+  });
+  it('scans saved scenes over stdio in read-only mode and reports the actual coverage', async () => {
+    const result = await call('project_scan', { projectId: 'test', startAfter: 'large.txt' });
+    expect(result.isError).not.toBe(true);
+    expect(result.data).toMatchObject({
+      complete: false,
+      scope: { totalScenes: 3, scenesBeforeStart: 2, checkedScenes: 1, remainingScenes: 0 },
+      scenes: [{
+        path: 'start.txt', status: 'checked',
+        issues: [{ category: 'missing', target: 'game/background/missing.png', line: 1 }],
+      }],
+    });
+    expect(JSON.stringify(result.data)).not.toContain('你好');
+    expect(await snapshot(project)).toBe(before);
+    expect((await call('project_scan', { projectId: 'unknown' })).isError).toBe(true);
+    expect((await call('project_scan', { projectId: 'test', limit: 101 })).isError).toBe(true);
   });
   it('enforces the complete MCP response size and cursor binding', async () => {
     const oversized = await call('scene_read', { projectId: 'test', path: 'large.txt' });

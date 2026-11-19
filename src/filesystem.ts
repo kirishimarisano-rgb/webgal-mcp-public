@@ -355,11 +355,18 @@ function compareCodePoints(left: string, right: string): number {
   return 0;
 }
 
+interface FileListOptions {
+  checkpoint?: () => void;
+  statOnly?: boolean;
+}
+
 export async function listFiles(
   root: string,
   relative: string,
-  extensions?: string[]
+  extensions?: string[],
+  options: FileListOptions = {},
 ): Promise<FileEntry[]> {
+  options.checkpoint?.();
   const rootResolved = await resolveAuthorizedRoot(root);
   const validated = validateRelativePath(relative);
   const start = await resolveSafe(rootResolved, validated);
@@ -384,6 +391,7 @@ export async function listFiles(
   let seenEntries = 0;
 
   const walk = async (directory: string, directoryRelative: string): Promise<void> => {
+    options.checkpoint?.();
     let canonicalDirectory: string;
     try {
       canonicalDirectory = await realpath(directory);
@@ -410,9 +418,14 @@ export async function listFiles(
       throwMappedReadError(error);
     }
 
+    options.checkpoint?.();
+    if (options.statOnly && directoryEntries.length > LIMITS.entries - seenEntries) {
+      tooManyEntries();
+    }
     directoryEntries.sort((left, right) => compareCodePoints(left.name, right.name));
 
     for (const directoryEntry of directoryEntries) {
+      options.checkpoint?.();
       seenEntries += 1;
       if (seenEntries > LIMITS.entries) {
         tooManyEntries();
@@ -465,6 +478,11 @@ export async function listFiles(
       }
       if (!isWithinRoot(rootResolved, canonicalEntry)) {
         throw new AppError('PATH_OUTSIDE_PROJECT', 'The requested path is outside the authorized root.');
+      }
+
+      if (options.statOnly) {
+        entries.push({ path: entryRelative, size: entryStat.size, lastModified: entryStat.mtimeMs });
+        continue;
       }
 
       let fileHandle: Awaited<ReturnType<typeof open>> | undefined;

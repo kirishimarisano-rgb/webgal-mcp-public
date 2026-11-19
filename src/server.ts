@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { publicError, AppError } from './errors.js';
 import { ReadService, ASSET_DIRS } from './service.js';
+import { PROJECT_SCAN_LIMITS } from './project-scan.js';
 import { LIMITS, type AppConfig } from './types.js';
 import { registerWriteTools, type WriteToolOptions } from './write-tools.js';
 
@@ -47,6 +48,15 @@ export function createServer(config: AppConfig, options: WriteToolOptions = {}) 
   }));
   server.registerTool('project_list', { description: 'List only projects authorized in the local configuration.', inputSchema: z.object(paging).strict(), annotations }, args => result(() => service.projects(args)));
   server.registerTool('project_inspect', { description: 'Inspect an authorized WebGAL project and its configuration summary. Use webgal_status with the projectId for connection troubleshooting and next steps.', inputSchema: z.object({ projectId }).strict(), annotations }, args => result(async () => ({ ...await service.inspect(args.projectId), ...(writeToolsEnabled ? { readOnly: false, writeToolsEnabled: true, writeAuthorization: 'per-session' } : {}) })));
+  server.registerTool('project_scan', {
+    description: 'Report missing and unverified references in saved scenes of an authorized project. Read-only and bounded. Check coverage and continue with scope.nextStartAfter when present. Does not fetch URLs or run the game.',
+    inputSchema: z.object({
+      projectId,
+      limit: z.number().int().min(1).max(PROJECT_SCAN_LIMITS.scenes).optional(),
+      startAfter: z.string().min(1).max(32767).optional(),
+    }).strict(),
+    annotations,
+  }, args => result(() => service.scan(args.projectId, args)));
   server.registerTool('scene_list', { description: 'List .txt scenes recursively, with paths relative to game/scene and bounded pagination.', inputSchema: z.object({ projectId, ...paging }).strict(), annotations }, args => result(() => service.scenes(args.projectId, args)));
   server.registerTool('scene_read', { description: 'Read a UTF-8 scene from disk with raw-byte SHA-256 revision and newline metadata. It may differ from unsaved Terre content.', inputSchema: z.object({ projectId, path: relativePath }).strict(), annotations }, args => result(() => service.scene(args.projectId, args.path)));
   server.registerTool('scene_validate', { description: 'Analyze scene syntax and static references without executing scripts or fetching resources. Dynamic references remain unresolved.', inputSchema: z.object({ projectId, path: relativePath, candidateText: z.string().max(LIMITS.textBytes).optional() }).strict(), annotations }, args => result(() => service.validate(args.projectId, args.path, args.candidateText)));

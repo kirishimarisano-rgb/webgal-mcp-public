@@ -3,6 +3,7 @@ import { stat } from 'node:fs/promises';
 import { getProject } from './config.js';
 import { listFiles, readText, resolveSafe, validateRelativePath } from './filesystem.js';
 import { analyzeScene, parseGameConfig } from './analysis.js';
+import { scanProject, type ProjectScanInput } from './project-scan.js';
 import { inspectTerre, previewUrl, type TerreInspection } from './terre.js';
 import { AppError, publicError } from './errors.js';
 import { LIMITS, type AppConfig, type ProjectConfig } from './types.js';
@@ -130,6 +131,10 @@ export class ReadService {
     const project = getProject(this.config, projectId);
     const document = await readProjectConfig(project);
     return { id: project.id, name: project.name ?? project.id, projectType: await exists(project.root, 'index.html') ? 'custom-engine' : 'content-only', entryExists: await exists(project.root, 'game/scene/start.txt'), configRevision: document.revision, config: parseGameConfig(document.text), terre: await inspectTerre(project), readOnly: true };
+  }
+  scan(projectId: string, input: ProjectScanInput): ReturnType<typeof scanProject> {
+    const project = getProject(this.config, projectId);
+    return scanProject(project, input, path => exists(project.root, path));
   }
   async scenes(projectId: string, input: PageInput) {
     const project = getProject(this.config, projectId);
