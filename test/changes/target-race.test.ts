@@ -1,12 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 
 it('publishes exactly one winner when two processes create the same new scene', async () => {
-  const base = await mkdtemp(path.join(tmpdir(), 'wgmcp-create-race-'));
+  const base = await realpath(await mkdtemp(path.join(tmpdir(), 'wgmcp-create-race-')));
   const root = path.join(base, 'project');
   const children: ChildProcessWithoutNullStreams[] = [];
   await mkdir(path.join(root, 'game', 'scene'), { recursive: true });

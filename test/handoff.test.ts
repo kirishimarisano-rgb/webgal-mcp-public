@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, access, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, access, rm, writeFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
@@ -7,7 +7,7 @@ import { createServer } from '../src/server.js';
 import { ProjectLocks } from '../src/changes/locks.js';
 
 it('revokes previous project handoffs when the user declares not-ready', async () => {
-  const base = await mkdtemp(path.join(tmpdir(), 'wgmcp-handoff-'));
+  const base = await realpath(await mkdtemp(path.join(tmpdir(), 'wgmcp-handoff-')));
   const root = path.join(base, 'project');
   await mkdir(path.join(root, 'game/scene'), { recursive: true });
   await writeFile(path.join(root, 'game/config.txt'), 'Game_name:Test;\n');
