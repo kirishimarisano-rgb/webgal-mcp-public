@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import { AppError } from '../errors.js';
 import { validateRelativePath } from '../filesystem.js';
 import { canonicalProjectKey } from '../changes/locks.js';
+import { LARGE_ASSET_LIMITS } from '../changes/types.js';
 import type { AppConfig, SourceConfig } from '../types.js';
 import { LIMITS } from '../types.js';
 
@@ -202,6 +203,120 @@ async function readBounded(handle: Awaited<ReturnType<typeof open>>): Promise<Bu
   return buffer.subarray(0, offset);
 }
 
+interface OpenSource {
+  source: SourceConfig;
+  root: string;
+  rootKey: string;
+  rootIdentity: BigIntStats;
+  target: string;
+  parent: string;
+  parentIdentity: BigIntStats;
+  before: BigIntStats;
+  handle: Awaited<ReturnType<typeof open>>;
+}
+
+async function openSource(
+  config: AppConfig,
+  sourceId: string,
+  relative: string,
+  maximum: number
+): Promise<OpenSource> {
+  const source = findSource(config, sourceId);
+  const validated = validateRelativePath(relative);
+  if (validated === '') {
+    pathInvalid();
+  }
+
+  const { root, rootKey, rootIdentity } = await canonicalSourceRoot(source);
+  const target = path.join(root, ...validated.split('/'));
+  if (!isWithinRoot(root, target)) {
+    pathInvalid('The requested source path is outside the authorized root.');
+  }
+
+  await assertNoSymlinkSegments(root, validated, rootIdentity);
+  const parent = path.dirname(target);
+  let parentIdentity: BigIntStats;
+  try {
+    parentIdentity = await lstat(parent, { bigint: true });
+  } catch (error) {
+    mapInspectionError(error);
+  }
+  if (parentIdentity.isSymbolicLink() || !parentIdentity.isDirectory()) {
+    pathInvalid('The source parent is not a regular directory.');
+  }
+
+  let targetBefore: BigIntStats;
+  try {
+    targetBefore = await lstat(target, { bigint: true });
+  } catch (error) {
+    mapInspectionError(error);
+  }
+  if (targetBefore.isSymbolicLink() || !targetBefore.isFile()) {
+    fileNotRegular();
+  }
+  if (targetBefore.size > BigInt(maximum)) {
+    fileTooLarge();
+  }
+  await assertRootIdentity(root, rootIdentity);
+
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(target, 'r');
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) {
+      fileNotRegular();
+    }
+    if (!snapshotMatches(targetBefore, before)) {
+      fileChanged();
+    }
+    if (before.size > BigInt(maximum)) {
+      fileTooLarge();
+    }
+
+    let targetAfterOpen: string;
+    try {
+      targetAfterOpen = await realpath(target);
+    } catch (error) {
+      if (isNodeError(error, ['ENOENT', 'ENOTDIR'])) {
+        fileChanged();
+      }
+      mapInspectionError(error);
+    }
+    if (!samePath(target, targetAfterOpen) || !isWithinRoot(root, targetAfterOpen)) {
+      pathInvalid('The source target is not a canonical regular file.');
+    }
+    let pathAfterOpen: BigIntStats;
+    try {
+      pathAfterOpen = await lstat(target, { bigint: true });
+    } catch (error) {
+      if (isNodeError(error, ['ENOENT', 'ENOTDIR'])) {
+        fileChanged();
+      }
+      mapInspectionError(error);
+    }
+    if (pathAfterOpen.isSymbolicLink()
+      || !pathAfterOpen.isFile()
+      || !snapshotMatches(before, pathAfterOpen)) {
+      fileChanged();
+    }
+
+    return {
+      source,
+      root,
+      rootKey,
+      rootIdentity,
+      target,
+      parent,
+      parentIdentity,
+      before,
+      handle
+    };
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    return mapInspectionError(error);
+  }
+}
+
 async function assertRootAndParentUnchanged(
   source: SourceConfig,
   root: string,
@@ -248,130 +363,174 @@ async function assertRootAndParentUnchanged(
   }
 }
 
+async function assertSourceUnchanged(
+  opened: OpenSource,
+  bytesRead: number,
+  maximum: number
+): Promise<void> {
+  let after: BigIntStats;
+  try {
+    after = await opened.handle.stat({ bigint: true });
+  } catch (error) {
+    mapInspectionError(error);
+  }
+  let pathAfter: BigIntStats;
+  try {
+    pathAfter = await lstat(opened.target, { bigint: true });
+  } catch (error) {
+    if (isNodeError(error, ['ENOENT', 'ENOTDIR'])) {
+      fileChanged();
+    }
+    mapInspectionError(error);
+  }
+  if (pathAfter.isSymbolicLink()
+    || !pathAfter.isFile()
+    || !snapshotMatches(opened.before, after)
+    || !snapshotMatches(opened.before, pathAfter)
+    || BigInt(bytesRead) !== after.size) {
+    fileChanged();
+  }
+  if (bytesRead > maximum) {
+    fileTooLarge();
+  }
+
+  await assertRootAndParentUnchanged(
+    opened.source,
+    opened.root,
+    opened.rootKey,
+    opened.rootIdentity,
+    opened.parent,
+    opened.parentIdentity
+  );
+}
+
+async function readChunk(
+  handle: Awaited<ReturnType<typeof open>>,
+  buffer: Buffer,
+  position: number
+): Promise<number> {
+  try {
+    const result = await handle.read(buffer, 0, buffer.byteLength, position);
+    return result.bytesRead;
+  } catch (error) {
+    return mapInspectionError(error);
+  }
+}
+
 export async function readSource(
   config: AppConfig,
   sourceId: string,
   relative: string
 ): Promise<{ bytes: Buffer; revision: string; rootKey: string }> {
-  const source = findSource(config, sourceId);
-  const validated = validateRelativePath(relative);
-  if (validated === '') {
-    pathInvalid();
-  }
-
-  const { root, rootKey, rootIdentity } = await canonicalSourceRoot(source);
-  const target = path.join(root, ...validated.split('/'));
-  if (!isWithinRoot(root, target)) {
-    pathInvalid('The requested source path is outside the authorized root.');
-  }
-
-  await assertNoSymlinkSegments(root, validated, rootIdentity);
-  const parent = path.dirname(target);
-  let parentIdentity: BigIntStats;
+  const opened = await openSource(config, sourceId, relative, LIMITS.textBytes);
   try {
-    parentIdentity = await lstat(parent, { bigint: true });
-  } catch (error) {
-    mapInspectionError(error);
-  }
-  if (parentIdentity.isSymbolicLink() || !parentIdentity.isDirectory()) {
-    pathInvalid('The source parent is not a regular directory.');
-  }
-
-  let targetBefore: BigIntStats;
-  try {
-    targetBefore = await lstat(target, { bigint: true });
-  } catch (error) {
-    mapInspectionError(error);
-  }
-  if (targetBefore.isSymbolicLink() || !targetBefore.isFile()) {
-    fileNotRegular();
-  }
-  if (targetBefore.size > BigInt(LIMITS.textBytes)) {
-    fileTooLarge();
-  }
-  await assertRootIdentity(root, rootIdentity);
-
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(target, 'r');
-    const before = await handle.stat({ bigint: true });
-    if (!before.isFile()) {
-      fileNotRegular();
-    }
-    if (!snapshotMatches(targetBefore, before)) {
-      fileChanged();
-    }
-    if (before.size > BigInt(LIMITS.textBytes)) {
-      fileTooLarge();
-    }
-
-    let targetAfterOpen: string;
-    try {
-      targetAfterOpen = await realpath(target);
-    } catch (error) {
-      if (isNodeError(error, ['ENOENT', 'ENOTDIR'])) {
-        fileChanged();
-      }
-      mapInspectionError(error);
-    }
-    if (!samePath(target, targetAfterOpen) || !isWithinRoot(root, targetAfterOpen)) {
-      pathInvalid('The source target is not a canonical regular file.');
-    }
-    let pathAfterOpen: BigIntStats;
-    try {
-      pathAfterOpen = await lstat(target, { bigint: true });
-    } catch (error) {
-      if (isNodeError(error, ['ENOENT', 'ENOTDIR'])) {
-        fileChanged();
-      }
-      mapInspectionError(error);
-    }
-    if (pathAfterOpen.isSymbolicLink()
-      || !pathAfterOpen.isFile()
-      || !snapshotMatches(before, pathAfterOpen)) {
-      fileChanged();
-    }
-
-    const bytes = await readBounded(handle);
-    const after = await handle.stat({ bigint: true });
-    let pathAfter: BigIntStats;
-    try {
-      pathAfter = await lstat(target, { bigint: true });
-    } catch (error) {
-      if (isNodeError(error, ['ENOENT', 'ENOTDIR'])) {
-        fileChanged();
-      }
-      mapInspectionError(error);
-    }
-    if (pathAfter.isSymbolicLink()
-      || !pathAfter.isFile()
-      || !snapshotMatches(before, after)
-      || !snapshotMatches(before, pathAfter)
-      || BigInt(bytes.byteLength) !== after.size) {
-      fileChanged();
-    }
+    const bytes = await readBounded(opened.handle);
+    await assertSourceUnchanged(opened, bytes.byteLength, LIMITS.textBytes);
     if (bytes.byteLength > LIMITS.textBytes) {
       fileTooLarge();
     }
 
-    await assertRootAndParentUnchanged(
-      source,
-      root,
-      rootKey,
-      rootIdentity,
-      parent,
-      parentIdentity
-    );
-
     return {
       bytes,
       revision: createHash('sha256').update(bytes).digest('hex'),
-      rootKey
+      rootKey: opened.rootKey
     };
   } catch (error) {
     return mapInspectionError(error);
   } finally {
-    await handle?.close().catch(() => undefined);
+    await opened.handle.close().catch(() => undefined);
+  }
+}
+
+export async function describeAssetSource(
+  config: AppConfig,
+  sourceId: string,
+  relative: string
+): Promise<{ bytes: number; revision: string; rootKey: string }> {
+  const opened = await openSource(
+    config,
+    sourceId,
+    relative,
+    LARGE_ASSET_LIMITS.maxFileBytes
+  );
+  try {
+    const hash = createHash('sha256');
+    let bytesRead = 0;
+    const buffer = Buffer.allocUnsafe(LARGE_ASSET_LIMITS.chunkBytes);
+    while (true) {
+      const read = await readChunk(opened.handle, buffer, bytesRead);
+      if (read === 0) {
+        break;
+      }
+      bytesRead += read;
+      if (bytesRead > LARGE_ASSET_LIMITS.maxFileBytes) {
+        fileTooLarge();
+      }
+      hash.update(buffer.subarray(0, read));
+    }
+
+    await assertSourceUnchanged(
+      opened,
+      bytesRead,
+      LARGE_ASSET_LIMITS.maxFileBytes
+    );
+    return {
+      bytes: bytesRead,
+      revision: hash.digest('hex'),
+      rootKey: opened.rootKey
+    };
+  } finally {
+    await opened.handle.close().catch(() => undefined);
+  }
+}
+
+export async function copyAssetSource(
+  config: AppConfig,
+  sourceId: string,
+  relative: string,
+  expected: { bytes: number; revision: string; rootKey: string },
+  write: (chunk: Buffer) => Promise<void>
+): Promise<void> {
+  const changed = () => new AppError('SOURCE_CHANGED', 'The large asset source changed or became unavailable.');
+  const opened = await openSource(
+    config,
+    sourceId,
+    relative,
+    LARGE_ASSET_LIMITS.maxFileBytes
+  ).catch(() => { throw changed(); });
+  try {
+    if (expected.rootKey !== opened.rootKey
+      || BigInt(expected.bytes) !== opened.before.size) {
+      throw changed();
+    }
+
+    const hash = createHash('sha256');
+    let bytesRead = 0;
+    const buffer = Buffer.allocUnsafe(LARGE_ASSET_LIMITS.chunkBytes);
+    while (true) {
+      const read = await readChunk(opened.handle, buffer, bytesRead).catch(() => { throw changed(); });
+      if (read === 0) {
+        break;
+      }
+      bytesRead += read;
+      if (bytesRead > LARGE_ASSET_LIMITS.maxFileBytes) {
+        throw changed();
+      }
+      const chunk = buffer.subarray(0, read);
+      hash.update(chunk);
+      await write(chunk);
+    }
+
+    await assertSourceUnchanged(
+      opened,
+      bytesRead,
+      LARGE_ASSET_LIMITS.maxFileBytes
+    ).catch(() => { throw changed(); });
+    if (bytesRead !== expected.bytes || hash.digest('hex') !== expected.revision) {
+      throw changed();
+    }
+  } finally {
+    await opened.handle.close().catch(() => undefined);
   }
 }
 
@@ -384,11 +543,11 @@ export async function inspectSource(
   if (validated === '') {
     pathInvalid();
   }
-  const result = await readSource(config, sourceId, validated);
+  const result = await describeAssetSource(config, sourceId, validated);
   return {
     sourceId,
     path: validated,
     revision: result.revision,
-    bytes: result.bytes.byteLength
+    bytes: result.bytes
   };
 }

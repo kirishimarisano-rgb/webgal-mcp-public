@@ -113,8 +113,11 @@ node dist/cli.js --config webgal-mcp.local.json --state-root "<absolute-private-
 - `import_asset` 的 path 相对于对应 kind 目录，使用 sourceId、sourcePath、expectedSourceRevision；素材先提交，场景/配置随后。新场景/素材不覆盖，父目录必须已存在。
 - `edit_config` 使用 `game/config.txt` 的 `expectedRevision` 和 `{key,value}` 更新。可以修改已识别的字段（例如 `Game_name`、`Description`、`Title_img`）或在格式明确时追加这些字段；其他字段和注释原样保留。目标字段重复、格式不明确或值不受支持时会拒绝写入。
 - 方案提供原始 hash、有界前后文本和实际修改处 diff，截断明确标记。静态诊断会考虑本批次新增文件；它不证明游戏最终能运行。
-- 所有文件当前上限1 MiB、批次32项且总计4 MiB；素材原样复制，不下载、不转码。文本编辑最多256个范围/操作。
+- 场景、配置和其他素材上限为每文件 1 MiB，使用原有缓冲写入的部分每批最多 4 MiB。背景图和 BGM 超过 1 MiB 时走流式导入，单文件最多 16 MiB，流式部分每批最多 32 MiB。两类额度分别计算，整个批次最多 32 项。
+- 流式计划只记录来源 ID、相对路径、大小和版本。应用时重新计算来源与暂存文件的 SHA-256，验证后以仅新建方式发布。素材原样复制，不下载、不转码。文本编辑最多 256 个范围/操作。
 
 冲突时不提供 force。failed、partial、uncertain 结果带 `isError=true` 和批次状态，必须检查实际磁盘后再决定，不能自动重试覆盖；complete 也可能带锁释放警告。多文件不具备原子性，hash 与外部写入之间仍有竞争窗口。
 
 保留 planId：回执丢失或进程重启后，可用 `recovery_inspect` 的 projectId + planId 查到已完成或未完成批次，不需要旧会话；旧会话不能恢复写权限。无过滤时仅发现未完成批次，`includeCompleted=true` 可查历史，分页使用 offset/limit。恢复必须有新鲜交接及用户选择，拒绝后来的人工修改，不删除新建文件或备份。崩溃维护 guard 和 staging 残留需操作者核对处理，不自动清除；手动打包前先检查残留。
+
+流式素材的恢复报告还列出 `sourceBytes`、`stagingBytes` 和 `stagingVerified`。计划内容是否已发布看 `diskState`，暂存是否残留看 `stagingPresent`。出现空间不足或中断时，先根据这两处确认磁盘状态再决定是否重做。

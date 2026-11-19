@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import { AppError } from '../errors.js';
 import { resolveSafe, validateRelativePath } from '../filesystem.js';
-import { WRITE_LIMITS } from './types.js';
+import { LARGE_ASSET_LIMITS, WRITE_LIMITS } from './types.js';
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -23,6 +23,8 @@ const ASSET_DIRECTORIES = new Set([
   'vocal',
   'video'
 ]);
+const STREAMED_ASSET_DIRECTORIES = new Set(['background', 'bgm']);
+const STREAMED_REVISION_MAX_BYTES = 16 * 1024 * 1024;
 
 interface WritePolicy {
   create: boolean;
@@ -42,6 +44,11 @@ interface TargetContext {
 interface FileSnapshot {
   revision: string;
   bytes: Buffer;
+}
+
+interface StreamedFileSnapshot {
+  revision: string;
+  bytes: number;
 }
 
 type CleanupResult = 'removed' | 'missing' | 'not-owned';
@@ -149,6 +156,49 @@ function normalizeRevision(expectedRevision: string | null): string | null {
     fail('INVALID_ARGUMENT', 'The expected revision must be a SHA-256 hash or null.');
   }
   return expectedRevision.toLowerCase();
+}
+
+function streamedAssetPath(relative: string): string {
+  const validated = assertWritePath(relative, true);
+  const match = /^game\/([^/]+)\/(.+)$/.exec(validated);
+  if (!match || !STREAMED_ASSET_DIRECTORIES.has(match[1] as string)) {
+    fail(
+      'PATH_INVALID',
+      'Streamed assets are supported only under game/background and game/bgm.'
+    );
+  }
+  return validated;
+}
+
+function normalizeStreamedExpectation(
+  expected: { bytes: number; revision: string }
+): { bytes: number; revision: string } {
+  if (typeof expected !== 'object' || expected === null) {
+    fail('INVALID_ARGUMENT', 'The expected streamed asset metadata is invalid.');
+  }
+  if (!Number.isSafeInteger(expected.bytes) || expected.bytes < 0) {
+    fail('INVALID_ARGUMENT', 'The expected byte count must be a non-negative integer.');
+  }
+  if (expected.bytes > LARGE_ASSET_LIMITS.maxFileBytes
+    || expected.bytes > LARGE_ASSET_LIMITS.maxBatchBytes) {
+    fail('FILE_TOO_LARGE', 'The streamed asset exceeds the configured size limit.');
+  }
+  if (typeof expected.revision !== 'string'
+    || !REVISION_PATTERN.test(expected.revision)) {
+    fail('INVALID_ARGUMENT', 'The expected revision must be a SHA-256 hash.');
+  }
+  return {
+    bytes: expected.bytes,
+    revision: expected.revision.toLowerCase()
+  };
+}
+
+function streamChunkBytes(): number {
+  const maximum = LARGE_ASSET_LIMITS.chunkBytes;
+  if (!Number.isSafeInteger(maximum) || maximum <= 0) {
+    fail('WRITE_FAILED', 'The streamed asset chunk limit is invalid.');
+  }
+  return maximum;
 }
 
 function mapPathInspectionError(error: unknown): never {
@@ -400,6 +450,112 @@ async function readRegularFile(
   }
 }
 
+async function hashRegularFile(
+  canonicalRoot: string,
+  target: string,
+  maximum: number,
+  missingCode: 'FILE_NOT_FOUND' | 'FILE_CHANGED'
+): Promise<StreamedFileSnapshot> {
+  const pathBefore = await lstat(target, { bigint: true }).catch((error: unknown) => {
+    if (isNodeError(error, ['ENOENT'])) {
+      return fail(missingCode, 'The requested target was not found.');
+    }
+    return mapPathInspectionError(error);
+  });
+  if (pathBefore.isSymbolicLink()) {
+    fail('PATH_INVALID', 'Symbolic links are not allowed in write paths.');
+  }
+  if (!pathBefore.isFile()) {
+    fail('FILE_NOT_REGULAR', 'The requested target is not a regular file.');
+  }
+  if (pathBefore.size > BigInt(maximum)) {
+    fail('FILE_TOO_LARGE', 'The target exceeds the configured size limit.');
+  }
+
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(target, 'r');
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) {
+      fail('FILE_NOT_REGULAR', 'The requested target is not a regular file.');
+    }
+    if (!snapshotMatches(pathBefore, before)) {
+      fail('FILE_CHANGED', 'The target changed while it was being opened.');
+    }
+    if (before.size > BigInt(maximum)) {
+      fail('FILE_TOO_LARGE', 'The target exceeds the configured size limit.');
+    }
+
+    const canonicalTarget = await realpath(target);
+    if (!samePath(canonicalTarget, target)
+      || !isWithinRoot(canonicalRoot, canonicalTarget)) {
+      fail('PATH_OUTSIDE_PROJECT', 'The target is outside the authorized root.');
+    }
+
+    const pathAfterOpen = await lstat(target, { bigint: true });
+    if (pathAfterOpen.isSymbolicLink()
+      || !pathAfterOpen.isFile()
+      || !snapshotMatches(before, pathAfterOpen)) {
+      fail('FILE_CHANGED', 'The target changed while it was being opened.');
+    }
+
+    const digest = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(Math.min(streamChunkBytes(), 256 * 1024));
+    let bytes = 0;
+    while (bytes <= maximum) {
+      const result = await handle.read(buffer, 0, buffer.byteLength, null);
+      if (result.bytesRead === 0) {
+        break;
+      }
+      bytes += result.bytesRead;
+      if (bytes > maximum) {
+        fail('FILE_TOO_LARGE', 'The target exceeds the configured size limit.');
+      }
+      digest.update(buffer.subarray(0, result.bytesRead));
+    }
+
+    const after = await handle.stat({ bigint: true });
+    const pathAfter = await lstat(target, { bigint: true }).catch((error: unknown) => {
+      if (isNodeError(error, ['ENOENT', 'ENOTDIR'])) {
+        return fail('FILE_CHANGED', 'The target changed while it was being read.');
+      }
+      return mapPathInspectionError(error);
+    });
+
+    if (pathAfter.isSymbolicLink()
+      || !pathAfter.isFile()
+      || !snapshotMatches(before, after)
+      || !snapshotMatches(before, pathAfter)
+      || BigInt(bytes) !== after.size) {
+      fail('FILE_CHANGED', 'The target changed while it was being read.');
+    }
+    if (bytes > maximum) {
+      fail('FILE_TOO_LARGE', 'The target exceeds the configured size limit.');
+    }
+
+    return {
+      revision: digest.digest('hex'),
+      bytes
+    };
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+    if (isNodeError(error, ['ENOENT', 'ENOTDIR'])) {
+      fail('FILE_CHANGED', 'The target changed while it was being read.');
+    }
+    if (isNodeError(error, ['EACCES', 'EPERM'])) {
+      fail('FILE_NOT_READABLE', 'The target could not be read.');
+    }
+    if (isNodeError(error, ['EISDIR'])) {
+      fail('FILE_NOT_REGULAR', 'The requested target is not a regular file.');
+    }
+    return fail('FILE_READ_FAILED', 'The target could not be read.');
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
 async function snapshotContext(context: TargetContext): Promise<FileSnapshot | null> {
   let targetStat: BigIntStats;
   try {
@@ -427,9 +583,76 @@ async function snapshotContext(context: TargetContext): Promise<FileSnapshot | n
   return snapshot;
 }
 
+async function assertTargetAbsentInContext(context: TargetContext): Promise<void> {
+  try {
+    await lstat(context.target, { bigint: true });
+  } catch (error) {
+    if (isNodeError(error, ['ENOENT'])) {
+      await assertContextUnchanged(context);
+      return;
+    }
+    mapPathInspectionError(error);
+  }
+
+  await assertContextUnchanged(context);
+  fail('TARGET_EXISTS', 'The create-only target already exists.');
+}
+
+function stagingPath(
+  context: TargetContext,
+  relative: string,
+  batchId: string,
+  index: number
+): string {
+  const relativePath = stagingRelative(relative, batchId, index);
+  return path.join(context.parent, path.posix.basename(relativePath));
+}
+
+function rethrowStreamedIoError(error: unknown): never {
+  if (error instanceof AppError) {
+    throw error;
+  }
+  if (isNodeError(error, ['ENOSPC'])) {
+    fail('STORAGE_FULL', 'The target could not be published because storage is full.');
+  }
+  if (isNodeError(error, ['EDQUOT'])) {
+    fail('STORAGE_FULL', 'The target could not be published because the storage quota was exceeded.');
+  }
+  fail('WRITE_FAILED', 'The streamed asset could not be published.');
+}
+
+async function publishCreateOnly(
+  temporaryPath: string,
+  target: string,
+  mapUnknownError: (error: unknown) => never
+): Promise<void> {
+  try {
+    await link(temporaryPath, target);
+  } catch (error) {
+    if (isNodeError(error, ['EEXIST'])) {
+      fail('TARGET_EXISTS', 'The create-only target already exists.');
+    }
+    if (isNodeError(error, [
+      'EACCES',
+      'ENOSYS',
+      'ENOTSUP',
+      'EOPNOTSUPP',
+      'EPERM',
+      'EXDEV'
+    ])) {
+      fail(
+        'CREATE_ONLY_UNSUPPORTED',
+        'Atomic create-only publication is unavailable; the target was not written.'
+      );
+    }
+    mapUnknownError(error);
+  }
+}
+
 async function writeAll(
   handle: Awaited<ReturnType<typeof open>>,
-  bytes: Buffer
+  bytes: Buffer,
+  position = 0
 ): Promise<void> {
   let offset = 0;
   while (offset < bytes.byteLength) {
@@ -437,7 +660,7 @@ async function writeAll(
       bytes,
       offset,
       bytes.byteLength - offset,
-      offset
+      position + offset
     );
     if (result.bytesWritten === 0) {
       fail('WRITE_FAILED', 'The temporary file could not be written.');
@@ -523,6 +746,15 @@ export function assertWritePath(relative: string, creating: boolean): string {
   return relative;
 }
 
+export async function assertCreateTargetAbsent(
+  root: string,
+  relative: string
+): Promise<void> {
+  const validated = assertWritePath(relative, true);
+  const context = await resolveTargetContext(root, validated);
+  await assertTargetAbsentInContext(context);
+}
+
 export function stagingRelative(
   relative: string,
   batchId: string,
@@ -547,10 +779,34 @@ export async function snapshotTarget(
     : { revision: snapshot.revision, bytes: snapshot.bytes };
 }
 
+export async function streamedTargetRevision(
+  root: string,
+  relative: string
+): Promise<string | null> {
+  const context = await resolveTargetContext(root, streamedAssetPath(relative));
+  let snapshot: StreamedFileSnapshot;
+  try {
+    snapshot = await hashRegularFile(
+      context.canonicalRoot,
+      context.target,
+      STREAMED_REVISION_MAX_BYTES,
+      'FILE_NOT_FOUND'
+    );
+  } catch (error) {
+    if (error instanceof AppError && error.code === 'FILE_NOT_FOUND') {
+      await assertContextUnchanged(context);
+      return null;
+    }
+    throw error;
+  }
+  await assertContextUnchanged(context);
+  return snapshot.revision;
+}
+
 /** Inspect only this batch's deterministic staging path; never read/follow its contents. */
 export async function inspectStaging(root: string, relative: string, batchId: string, index: number): Promise<boolean> {
   const context = await resolveTargetContext(root, relative);
-  const target = path.join(context.parent, path.posix.basename(stagingRelative(relative, batchId, index)));
+  const target = stagingPath(context, relative, batchId, index);
   try {
     await lstat(target);
     await assertContextUnchanged(context);
@@ -561,6 +817,265 @@ export async function inspectStaging(root: string, relative: string, batchId: st
       return false;
     }
     throw error;
+  }
+}
+
+export async function inspectStreamedStaging(
+  root: string,
+  relative: string,
+  batchId: string,
+  index: number
+): Promise<{ present: boolean; bytes: number | null; revision: string | null }> {
+  const context = await resolveTargetContext(root, streamedAssetPath(relative));
+  const target = stagingPath(
+    context,
+    relative,
+    normalizeBatchId(batchId),
+    normalizeIndex(index)
+  );
+
+  let targetStat: BigIntStats;
+  try {
+    targetStat = await lstat(target, { bigint: true });
+  } catch (error) {
+    if (isNodeError(error, ['ENOENT'])) {
+      await assertContextUnchanged(context);
+      return { present: false, bytes: null, revision: null };
+    }
+    mapPathInspectionError(error);
+  }
+
+  if (targetStat.isSymbolicLink()
+    || !targetStat.isFile()
+    || targetStat.size > BigInt(LARGE_ASSET_LIMITS.maxFileBytes)) {
+    await assertContextUnchanged(context);
+    return { present: true, bytes: null, revision: null };
+  }
+
+  try {
+    const snapshot = await hashRegularFile(
+      context.canonicalRoot,
+      target,
+      LARGE_ASSET_LIMITS.maxFileBytes,
+      'FILE_CHANGED'
+    );
+    await assertContextUnchanged(context);
+    return {
+      present: true,
+      bytes: snapshot.bytes,
+      revision: snapshot.revision
+    };
+  } catch (error) {
+    if (error instanceof AppError
+      && [
+        'FILE_CHANGED',
+        'FILE_NOT_READABLE',
+        'FILE_NOT_REGULAR',
+        'FILE_READ_FAILED',
+        'FILE_TOO_LARGE',
+        'PATH_INVALID',
+        'PATH_OUTSIDE_PROJECT'
+      ].includes(error.code)) {
+      await assertContextUnchanged(context);
+      return { present: true, bytes: null, revision: null };
+    }
+    throw error;
+  }
+}
+
+export async function publishStreamedAsset(
+  root: string,
+  relative: string,
+  expected: { bytes: number; revision: string },
+  stream: (write: (chunk: Buffer) => Promise<void>) => Promise<void>,
+  batchId: string,
+  index: number,
+  authorize?: () => void
+): Promise<void> {
+  const validated = streamedAssetPath(relative);
+  const normalizedExpected = normalizeStreamedExpectation(expected);
+  const normalizedBatchId = normalizeBatchId(batchId);
+  const normalizedIndex = normalizeIndex(index);
+  if (typeof stream !== 'function') {
+    fail('INVALID_ARGUMENT', 'The streamed asset producer must be a function.');
+  }
+  if (authorize !== undefined && typeof authorize !== 'function') {
+    fail('INVALID_ARGUMENT', 'The authorization callback must be a function.');
+  }
+
+  const context = await resolveTargetContext(root, validated);
+  await assertTargetAbsentInContext(context);
+  const temporaryPath = stagingPath(
+    context,
+    validated,
+    normalizedBatchId,
+    normalizedIndex
+  );
+
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let temporaryIdentity: BigIntStats | undefined;
+  let stagingCreated = false;
+  let published = false;
+  let streamedBytes = 0;
+  let writeChain = Promise.resolve();
+  let writeFailed = false;
+  let writeError: unknown;
+
+  const queueWrite = (chunk: Buffer): Promise<void> => {
+    const operation = writeChain.then(async () => {
+      if (!Buffer.isBuffer(chunk)) {
+        fail('INVALID_ARGUMENT', 'Streamed asset chunks must be Buffers.');
+      }
+      if (chunk.byteLength > streamChunkBytes()) {
+        fail('INVALID_ARGUMENT', 'A streamed asset chunk exceeds the configured chunk limit.');
+      }
+      if (streamedBytes + chunk.byteLength > normalizedExpected.bytes) {
+        fail('FILE_TOO_LARGE', 'The streamed asset produced more bytes than expected.');
+      }
+      if (!handle) {
+        fail('WRITE_FAILED', 'The staging file is no longer available.');
+      }
+      await writeAll(handle, chunk, streamedBytes);
+      streamedBytes += chunk.byteLength;
+    });
+    writeChain = operation.catch((error: unknown) => {
+      if (!writeFailed) {
+        writeFailed = true;
+        writeError = error;
+      }
+    });
+    return operation;
+  };
+
+  try {
+    await assertContextUnchanged(context);
+    try {
+      handle = await open(temporaryPath, 'wx', 0o600);
+      stagingCreated = true;
+    } catch (error) {
+      if (isNodeError(error, ['EEXIST'])) {
+        fail('STAGING_EXISTS', 'The deterministic staging file already exists.');
+      }
+      rethrowStreamedIoError(error);
+    }
+
+    const before = await handle.stat({ bigint: true });
+    temporaryIdentity = before;
+    if (!before.isFile() || before.size !== 0n) {
+      fail('WRITE_FAILED', 'The staging target is not a new regular file.');
+    }
+
+    try {
+      await stream(queueWrite);
+    } finally {
+      await writeChain;
+    }
+    if (writeFailed) {
+      throw writeError;
+    }
+    if (streamedBytes !== normalizedExpected.bytes) {
+      fail('WRITE_FAILED', 'The streamed asset did not produce the expected number of bytes.');
+    }
+
+    await handle.sync();
+    const after = await handle.stat({ bigint: true });
+    if (!sameFileIdentity(before, after)
+      || after.size !== BigInt(normalizedExpected.bytes)) {
+      fail('WRITE_FAILED', 'The staging file failed write-back verification.');
+    }
+    await handle.close();
+    handle = undefined;
+    await syncDirectory(context.parent);
+
+    const staged = await hashRegularFile(
+      context.canonicalRoot,
+      temporaryPath,
+      normalizedExpected.bytes,
+      'FILE_CHANGED'
+    );
+    const stagedStat = await lstat(temporaryPath, { bigint: true });
+    if (!sameFileIdentity(stagedStat, temporaryIdentity)
+      || staged.bytes !== normalizedExpected.bytes
+      || staged.revision !== normalizedExpected.revision) {
+      fail('WRITE_FAILED', 'The streamed staging file did not match its expected content.');
+    }
+
+    await assertContextUnchanged(context);
+    await assertTargetAbsentInContext(context);
+    await assertContextUnchanged(context);
+
+    authorize?.();
+    await publishCreateOnly(temporaryPath, context.target, rethrowStreamedIoError);
+    published = true;
+    await syncDirectory(context.parent);
+    await assertContextUnchanged(context);
+
+    const targetStat = await lstat(context.target, { bigint: true });
+    if (targetStat.isSymbolicLink()
+      || !targetStat.isFile()
+      || !sameFileIdentity(targetStat, temporaryIdentity)) {
+      fail('OUTCOME_UNKNOWN', 'The published target does not have the expected identity.');
+    }
+    const targetSnapshot = await hashRegularFile(
+      context.canonicalRoot,
+      context.target,
+      normalizedExpected.bytes,
+      'FILE_CHANGED'
+    );
+    if (targetSnapshot.bytes !== normalizedExpected.bytes
+      || targetSnapshot.revision !== normalizedExpected.revision) {
+      fail('OUTCOME_UNKNOWN', 'The published target failed streamed write-back verification.');
+    }
+
+    const cleanup = await removeOwnedFile(temporaryPath, temporaryIdentity);
+    if (cleanup === 'not-owned') {
+      fail('OUTCOME_UNKNOWN', 'The published target could not be safely detached from staging.');
+    }
+    await syncDirectory(context.parent);
+    await assertContextUnchanged(context);
+
+    const finalStat = await lstat(context.target, { bigint: true });
+    if (finalStat.isSymbolicLink()
+      || !finalStat.isFile()
+      || !sameFileIdentity(finalStat, temporaryIdentity)) {
+      fail('OUTCOME_UNKNOWN', 'The published target changed after publication.');
+    }
+    const finalSnapshot = await hashRegularFile(
+      context.canonicalRoot,
+      context.target,
+      normalizedExpected.bytes,
+      'FILE_CHANGED'
+    );
+    if (finalSnapshot.bytes !== normalizedExpected.bytes
+      || finalSnapshot.revision !== normalizedExpected.revision) {
+      fail('OUTCOME_UNKNOWN', 'The published target changed after publication.');
+    }
+    await assertContextUnchanged(context);
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+
+    let cleanup: CleanupResult | 'identity-unknown' | undefined;
+    if (temporaryIdentity) {
+      cleanup = await removeOwnedFile(temporaryPath, temporaryIdentity);
+    } else if (stagingCreated) {
+      cleanup = await lstat(temporaryPath, { bigint: true }).then(
+        () => 'identity-unknown' as const,
+        (inspectionError: unknown) => isNodeError(inspectionError, ['ENOENT', 'ENOTDIR'])
+          ? 'missing'
+          : 'identity-unknown'
+      );
+    }
+
+    if (cleanup === 'not-owned' || cleanup === 'identity-unknown') {
+      fail('OUTCOME_UNKNOWN', 'The staging file may remain and its ownership could not be confirmed.');
+    }
+    if (published) {
+      if (error instanceof AppError && error.code === 'OUTCOME_UNKNOWN') {
+        throw error;
+      }
+      fail('OUTCOME_UNKNOWN', 'The target may have been published, but final verification failed.');
+    }
+    rethrowStreamedIoError(error);
   }
 }
 
@@ -587,20 +1102,20 @@ export async function publishTarget(
   const content = Buffer.from(bytes);
 
   const context = await resolveTargetContext(root, validated);
-  const initial = await snapshotContext(context);
   if (creating) {
-    if (initial !== null) {
-      fail('TARGET_EXISTS', 'The create-only target already exists.');
+    await assertTargetAbsentInContext(context);
+  } else {
+    const initial = await snapshotContext(context);
+    if (initial === null || initial.revision !== normalizedExpectedRevision) {
+      fail('REVISION_CONFLICT', 'The target revision no longer matches the expected revision.');
     }
-  } else if (initial === null
-    || initial.revision !== normalizedExpectedRevision) {
-    fail('REVISION_CONFLICT', 'The target revision no longer matches the expected revision.');
   }
 
-  const temporaryRelative = stagingRelative(validated, normalizedBatchId, normalizedIndex);
-  const temporaryPath = path.join(
-    context.parent,
-    path.posix.basename(temporaryRelative)
+  const temporaryPath = stagingPath(
+    context,
+    validated,
+    normalizedBatchId,
+    normalizedIndex
   );
 
   let handle: Awaited<ReturnType<typeof open>> | undefined;
@@ -648,41 +1163,24 @@ export async function publishTarget(
     }
 
     await assertContextUnchanged(context);
-    const current = await snapshotContext(context);
     if (creating) {
-      if (current !== null) {
-        fail('TARGET_EXISTS', 'The create-only target appeared before publication.');
+      await assertTargetAbsentInContext(context);
+    } else {
+      const current = await snapshotContext(context);
+      if (current === null || current.revision !== normalizedExpectedRevision) {
+        fail('REVISION_CONFLICT', 'The target revision changed before publication.');
       }
-    } else if (current === null
-      || current.revision !== normalizedExpectedRevision) {
-      fail('REVISION_CONFLICT', 'The target revision changed before publication.');
     }
     await assertContextUnchanged(context);
 
     // Revoke expired/disconnected host sessions after staging IO, before publication.
     authorize?.();
     if (creating) {
-      try {
-        await link(temporaryPath, context.target);
-      } catch (error) {
-        if (isNodeError(error, ['EEXIST'])) {
-          fail('TARGET_EXISTS', 'The create-only target already exists.');
-        }
-        if (isNodeError(error, [
-          'EACCES',
-          'ENOSYS',
-          'ENOTSUP',
-          'EOPNOTSUPP',
-          'EPERM',
-          'EXDEV'
-        ])) {
-          fail(
-            'CREATE_ONLY_UNSUPPORTED',
-            'Atomic create-only publication is unavailable; the target was not written.'
-          );
-        }
-        fail('WRITE_FAILED', 'The create-only target could not be published.');
-      }
+      await publishCreateOnly(
+        temporaryPath,
+        context.target,
+        () => fail('WRITE_FAILED', 'The create-only target could not be published.')
+      );
       published = true;
       await syncDirectory(context.parent);
       await assertContextUnchanged(context);
