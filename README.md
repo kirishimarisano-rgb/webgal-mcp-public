@@ -76,3 +76,5 @@ codex mcp list
 - **能读文件但连不到 Terre：** 确认 Terre 在运行、端口正确，并核对 `root` 和 `terreGameDir` 是否指向同一个工程。
 
 已验证 Windows + Codex + Terre。源码按 [PolyForm Noncommercial 1.0.0](LICENSE) 提供，限制商业使用；第三方依赖适用各自的许可证。
+
+想参与开发？查看[下一版开发计划](https://github.com/yuri77521/webgal-mcp-public/blob/main/docs/roadmap.md)。
