@@ -1,0 +1,52 @@
+# Read-only upstream source snapshots (never vendor or publish).
+/references/
+
+# Internal planning, acceptance records, and historical probes.
+/ACCEPTANCE.md
+/AGENTS.md
+/PLAN.md
+/PLANS.md
+/PRD.md
+/PROGRESS.md
+/docs/p[0-5]/
+/scripts/p0/
+/scripts/p1/
+/tools/p0/
+
+# Dependencies and generated outputs.
+node_modules/
+dist/
+build/
+coverage/
+.cache/
+*.tsbuildinfo
+*.log
+
+# Local projects, probe output, credentials and agent configuration.
+/.local/
+/.p0/
+/.webgal-mcp/
+/.codex/
+/.agents/
+/.vscode/
+/.idea/
+.env
+.env.*
+!.env.example
+*.local.json
+*.local.toml
+*.local.yaml
+*.local.yml
+.npmrc
+*.pem
+*.key
+*.pfx
+*.p12
+credentials.json
+secrets.json
+auth.json
+
+# OS files.
+.DS_Store
+Thumbs.db
+Desktop.ini

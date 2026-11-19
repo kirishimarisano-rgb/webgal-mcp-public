@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
+import { loadConfig } from './config.js';
+import { createServer } from './server.js';
+import { AppError, publicError } from './errors.js';
+
+async function main() {
+  const args = process.argv.slice(2);
+  if ((args.length !== 2 && args.length !== 4) || args[0] !== '--config' || (args.length === 4 && (args[2] !== '--state-root' || !args[3]))) throw new AppError('CONFIG_REQUIRED', 'Usage: webgal-mcp --config <local configuration file> [--state-root <private state directory outside projects>]');
+  const config = await loadConfig(args[1]);
+  await serveStdio(() => createServer(config, { stateRoot: args[3] }));
+}
+main().catch(error => {
+  process.stderr.write(`${JSON.stringify(publicError(error))}\n`);
+  process.exitCode = 1;
+});
