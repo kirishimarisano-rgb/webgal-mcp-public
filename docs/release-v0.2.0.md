@@ -1,10 +1,10 @@
-# webgal-mcp v0.2.0 Windows 验收与发布候选说明
+# webgal-mcp v0.2.0 Windows 与 Terre 验收记录
 
-**本机发布候选已通过 Windows 与 Terre 验收，等待合并及发布确认。** 本页列出 v0.2.0 的候选交付范围、实测结果和发布条件。
+**v0.2.0 已通过 Windows 与 Terre 验收，并合入 `main`。** 本页记录交付范围、实测结果和发布状态。
 
-候选版本号为 `0.2.0`，包属性为 `private: true`，源码使用 PolyForm Noncommercial 1.0.0。
+包版本号为 `0.2.0`，包属性为 `private: true`，源码使用 PolyForm Noncommercial 1.0.0。
 
-## 候选范围
+## 交付范围
 
 ### NEXT-01 连接诊断
 
@@ -24,9 +24,9 @@
 
 `scope` 记录总场景数、已检查数、未完成数与下一页入口，`stopReason` 标记上限。单批最多 100 个场景，清单最多 10,000 项，单场景最多 128 KiB，场景与问题详情合计最多 128 KiB，并受 5 秒预算约束。动态引用、编辑器缓冲区和外部 URL 留给人工预览核对。扫描不执行脚本、不访问外部 URL、不自动修复或导出。
 
-### NEXT-04 / NEXT-05 大素材候选
+### NEXT-04 / NEXT-05 大素材导入
 
-候选阶段只为新建的 `game/background/**` 与 `game/bgm/**` 启用流式导入，单文件最多 16 MiB（16,777,216 B），同一批的流式大素材合计最多 32 MiB。来源按 64 KiB 分块读取并计算 SHA-256，计划保存来源身份与版本，媒体内容不进入 MCP 输出或日志。
+导入超过 1 MiB 的新背景图（`game/background/**`）或 BGM（`game/bgm/**`）时使用流式导入，单文件最多 16 MiB（16,777,216 B），同一批的流式大素材合计最多 32 MiB。来源按 64 KiB 分块读取并计算 SHA-256，计划保存来源身份与版本，媒体内容不进入 MCP 输出或日志。
 
 文本与其他素材继续使用单文件 1 MiB 上限。走原有缓冲写入的部分继续使用每批 4 MiB 上限。两类额度分别计算。大素材沿用现有 Write Coordinator 的人工交接、来源复核、目标不存在检查、计划、故障记录与恢复流程，已存在的同名目标不覆盖。
 
@@ -101,5 +101,5 @@
 - [x] NEXT-01、NEXT-02 与 NEXT-03 的实际结果和公开文档一致。
 - [x] 大背景图与 BGM 完成真实 Terre 选用、保存、重开和预览。
 - [x] 同名、来源变化、注入 `ENOSPC` 和进程中断结果均完成复核。
-- [ ] 将候选合并到 `main`，确认必需的 Windows CI 通过。
+- [x] 合入 `main` 并通过 Windows CI。[合并记录](https://github.com/yuri77521/webgal-mcp-public/pull/5) · [Windows CI](https://github.com/yuri77521/webgal-mcp-public/actions/runs/44554325548)
 - [ ] 维护者确认 Git 标签与 GitHub 发布。
