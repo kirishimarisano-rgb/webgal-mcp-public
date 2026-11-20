@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import type { BigIntStats } from 'node:fs';
 import {
   link,
@@ -10,6 +11,7 @@ import {
 } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
+import { promisify } from 'node:util';
 import { AppError } from '../errors.js';
 import { resolveSafe, validateRelativePath } from '../filesystem.js';
 import { LARGE_ASSET_LIMITS, WRITE_LIMITS } from './types.js';
@@ -766,6 +768,45 @@ export function checkedModelDirectory(directory: string): string {
   return assertReferenceableTarget(directory);
 }
 
+const execFileAsync = promisify(execFile);
+
+function modelDirectoryStagingRelative(relative: string, batchId: string, index: number): string {
+  const name = ['.wgmcp-dir', normalizeBatchId(batchId), index].join('-') + '.tmp';
+  return path.posix.join(parentRelative(relative), name);
+}
+
+function directoryPublisher(): string {
+  if (process.platform !== 'win32') {
+    fail('CREATE_ONLY_UNSUPPORTED', 'Publishing a model directory requires Windows and PowerShell 7.');
+  }
+  return path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe');
+}
+
+async function publishModelDirectory(
+  publisher: string,
+  staged: string,
+  context: TargetContext,
+): Promise<void> {
+  // Directory.Move on Windows refuses an occupied name, including a regular file.
+  // Node's rename uses a replace flag. Keep paths out of the PowerShell command text.
+  try {
+    await execFileAsync(publisher, [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      '$ErrorActionPreference = "Stop"; [System.IO.Directory]::Move($env:WGMCP_DIRECTORY_STAGE, $env:WGMCP_DIRECTORY_TARGET)',
+    ], {
+      env: { ...process.env, WGMCP_DIRECTORY_STAGE: staged, WGMCP_DIRECTORY_TARGET: context.target },
+      windowsHide: true,
+      timeout: 30_000,
+    });
+  } catch (error) {
+    await assertTargetAbsentInContext(context);
+    if (isNodeError(error, ['ENOENT', 'EACCES', 'EPERM'])) {
+      fail('CREATE_ONLY_UNSUPPORTED', 'Install PowerShell 7 in its standard Windows location to import model directories.');
+    }
+    fail('WRITE_FAILED', 'The staged model directory could not be published.');
+  }
+}
+
 function directoryIdentity(entry: BigIntStats): string {
   return createHash('sha256').update(`${entry.dev}:${entry.ino}:${entry.birthtimeNs}`).digest('hex');
 }
@@ -794,28 +835,54 @@ export async function modelDirectoryIdentity(root: string, relative: string): Pr
 export async function createModelDirectory(
   root: string,
   relative: string,
+  batchId: string,
+  index: number,
   authorize: () => void,
   validateAncestors: () => Promise<void>,
+  beforePublish: () => void | Promise<void>,
 ): Promise<string> {
   const context = await resolveTargetContext(root, relative);
   await assertTargetAbsentInContext(context);
+  const publisher = directoryPublisher();
+  const staged = path.join(context.parent, path.posix.basename(modelDirectoryStagingRelative(relative, batchId, index)));
   await validateAncestors();
   await assertContextUnchanged(context);
   authorize();
   try {
-    await mkdir(context.target, { mode: 0o700 });
+    await mkdir(staged, { mode: 0o700 });
   } catch (error) {
-    if (isNodeError(error, ['EEXIST'])) fail('TARGET_EXISTS', 'The model directory already exists.');
+    if (isNodeError(error, ['EEXIST'])) fail('TARGET_EXISTS', 'The model staging directory already exists.');
     throw error;
   }
-  const created = await lstat(context.target, { bigint: true });
+  const created = await lstat(staged, { bigint: true });
+  const identity = directoryIdentity(created);
+  if (!created.isDirectory() || created.isSymbolicLink()) {
+    fail('FILE_CHANGED', 'The staged model directory no longer matches.');
+  }
+
+  await beforePublish();
+  await validateAncestors();
+  await assertContextUnchanged(context);
+  const current = await lstat(staged, { bigint: true });
+  if (!current.isDirectory() || !sameFileIdentity(created, current)) {
+    fail('FILE_CHANGED', 'The staged model directory no longer matches.');
+  }
+  authorize();
+  await publishModelDirectory(publisher, staged, context);
   await assertContextUnchanged(context);
   await syncDirectory(context.parent);
-  const identity = directoryIdentity(created);
-  if (!created.isDirectory() || await modelDirectoryIdentity(root, relative) !== identity) {
+  if (await modelDirectoryIdentity(root, relative) !== identity) {
     fail('FILE_CHANGED', 'A newly created model directory no longer matches.');
   }
   return identity;
+}
+
+export async function inspectModelDirectoryStaging(
+  root: string, relative: string, batchId: string, index: number,
+): Promise<string | null> {
+  const context = await resolveTargetContext(root, relative);
+  const staged = modelDirectoryStagingRelative(relative, batchId, index);
+  return await stagingExists(context, path.join(context.parent, path.posix.basename(staged))) ? staged : null;
 }
 
 export function stagingRelative(
@@ -870,7 +937,10 @@ export async function streamedTargetRevision(
 /** Inspect only this batch's deterministic staging path; never read/follow its contents. */
 export async function inspectStaging(root: string, relative: string, batchId: string, index: number): Promise<boolean> {
   const context = await resolveTargetContext(root, relative);
-  const target = stagingPath(context, relative, batchId, index);
+  return stagingExists(context, stagingPath(context, relative, batchId, index));
+}
+
+async function stagingExists(context: TargetContext, target: string): Promise<boolean> {
   try {
     await lstat(target);
     await assertContextUnchanged(context);

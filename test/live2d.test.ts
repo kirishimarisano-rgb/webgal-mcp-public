@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -200,6 +200,32 @@ it('refuses to adopt a directory created by someone else after preflight', async
   expect(recovery.directories).toContainEqual({ path: 'game/figure/hero', phase: 'intent', diskState: 'present' });
 });
 
+it.each(['directory', 'file'])('preserves a %s whose name is occupied at model directory publication', async kind => {
+  const target = join(root, 'game/figure/hero');
+  let originalIdentity: bigint | undefined;
+  const host = await coordinator(async (point, index) => {
+    if (point !== 'before-model-directory-publish' || index !== 0) return;
+    if (kind === 'directory') await mkdir(target);
+    else await writeFile(target, 'user bytes', { flag: 'wx' });
+    originalIdentity = (await lstat(target, { bigint: true })).ino;
+  });
+  const { session, plan } = await reviewed(host);
+  const applied = await host.apply(owner, session.id, plan.planId!, 'occupied-publication');
+  expect(applied).toMatchObject({ status: 'uncertain', errorCode: 'TARGET_EXISTS' });
+  expect(applied.operations.every(operation => operation.phase === 'pending')).toBe(true);
+  expect(originalIdentity).toBeDefined();
+  expect((await lstat(target, { bigint: true })).ino).toBe(originalIdentity);
+  if (kind === 'directory') expect(await readdir(target)).toEqual([]);
+  else expect(await readFile(target, 'utf8')).toBe('user bytes');
+  const recovery = await host.inspect('test', applied.batchId);
+  const retained = recovery.directories?.find(directory => directory.path === 'game/figure/hero');
+  expect(retained).toMatchObject({ phase: 'intent', stagingPath: expect.stringMatching(/^game\/figure\/\.wgmcp-dir-/) });
+  expect(await readdir(join(root, retained!.stagingPath!))).toEqual([]);
+  expect(await host.apply(owner, session.id, plan.planId!, 'occupied-publication')).toMatchObject({
+    batchId: applied.batchId, replayed: true, errorCode: 'TARGET_EXISTS',
+  });
+});
+
 it('requires the reviewed files at handoff and again at apply', async () => {
   const host = await coordinator();
   const review = await draft();
@@ -229,6 +255,7 @@ it('rechecks installed dependencies immediately before publishing the model entr
 });
 
 it.each([
+  ['before-model-directory-publish', 0, 'missing', 'missing'],
   ['after-model-directory', 0, 'missing', 'present'],
   ['after-write', 0, 'missing', 'planned'],
   ['after-write', dependencies.length, 'planned', 'planned'],
@@ -242,7 +269,12 @@ it.each([
   expect(history.unreadableRecords).toBe(0);
   expect(history.batches).toHaveLength(1);
   const batch = history.batches[0];
-  expect(batch.directories?.find(item => item.path === 'game/figure/hero')?.diskState).toBe(directoryState);
+  const directory = batch.directories?.find(item => item.path === 'game/figure/hero');
+  expect(directory?.diskState).toBe(directoryState);
+  if (fault === 'before-model-directory-publish') {
+    expect(directory?.stagingPath).toEqual(expect.any(String));
+    expect(await readdir(join(root, directory!.stagingPath!))).toEqual([]);
+  }
   expect(batch.operations.find(item => item.path === modelPath)?.diskState).toBe(entryState);
   if (entryState === 'planned') expect(batch.operations.every(item => item.diskState === 'planned')).toBe(true);
 }, 20_000);

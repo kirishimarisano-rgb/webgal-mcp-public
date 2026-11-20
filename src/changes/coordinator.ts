@@ -10,7 +10,7 @@ import { canonicalProjectKey, ProjectLocks } from './locks.js';
 import { StateStore } from './store.js';
 import { copyAssetSource, describeAssetSource, readSource } from '../assets/source.js';
 import { validateRelativePath } from '../filesystem.js';
-import { assertCreateTargetAbsent, assertReferenceableTarget, assertWritePath, snapshotTarget, publishTarget, publishStreamedAsset, streamedTargetRevision, inspectStaging, inspectStreamedStaging, checkedModelDirectory, createModelDirectory, modelDirectoryIdentity } from './targets.js';
+import { assertCreateTargetAbsent, assertReferenceableTarget, assertWritePath, snapshotTarget, publishTarget, publishStreamedAsset, streamedTargetRevision, inspectStaging, inspectStreamedStaging, checkedModelDirectory, createModelDirectory, inspectModelDirectoryStaging, modelDirectoryIdentity } from './targets.js';
 import { LARGE_ASSET_LIMITS, WRITE_LIMITS, type ChangeInput, type CoordinatorChange, type PlannedChange, type WritePlan, type BatchRecord, type ApplyResult, type FaultHook, type SourceRevision, type ModelBundle } from './types.js';
 
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
@@ -323,7 +323,15 @@ export class WriteCoordinator {
           directory.phase = 'intent';
           await this.store.replaceJson(journalPath, record);
           await this.fault('before-model-directory', index);
-          const directoryIdentity = await createModelDirectory(project.root, directory.path, authorize, () => validateAncestors(directory.path));
+          const directoryIdentity = await createModelDirectory(
+            project.root,
+            directory.path,
+            record.id,
+            index,
+            authorize,
+            () => validateAncestors(directory.path),
+            () => this.fault('before-model-directory-publish', index),
+          );
           await this.fault('after-model-directory', index);
           directory.identity = directoryIdentity;
           directory.phase = 'created';
@@ -414,13 +422,21 @@ export class WriteCoordinator {
     const { record, modelBundle } = await this.readBatch(batchId, projectId);
     const project = getProject(this.config, projectId);
     const directories = [];
-    for (const directory of record.directories ?? []) {
+    for (const [index, directory] of (record.directories ?? []).entries()) {
       let observed: string | null | undefined;
       try { observed = await modelDirectoryIdentity(project.root, directory.path); }
       catch { /* Preserve an unknown state when a path can no longer be verified. */ }
       const diskState = observed === undefined ? 'unreadable' : observed === null ? 'missing'
         : !directory.identity ? 'present' : observed === directory.identity ? 'planned' : 'changed';
-      directories.push({ path: directory.path, phase: directory.phase, diskState });
+      let stagingPath: string | null | undefined;
+      if (directory.phase === 'intent') {
+        try { stagingPath = await inspectModelDirectoryStaging(project.root, directory.path, record.id, index); }
+        catch { /* A null stagingPath below denotes an unreadable staging state. */ }
+      }
+      directories.push({
+        path: directory.path, phase: directory.phase, diskState,
+        ...(directory.phase === 'intent' && stagingPath !== null ? { stagingPath: stagingPath ?? null } : {}),
+      });
     }
     const operations = [];
     for (let index = 0; index < record.operations.length; index++) {
