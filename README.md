@@ -4,6 +4,14 @@
 
 默认**只读**。想让 Codex 修改文件，需要主动开启写入，并在每批修改前先保存、关闭该工程的全部编辑页。
 
+## v0.2.0 可以做什么
+
+v0.2.0 已合入 `main`。按下面的步骤从源码构建即可使用。
+
+- **连接排查。** 用 `webgal_status` 检查工程文件、Terre 连接和工程映射，并按返回的提示处理。
+- **导出前检查。** 用 `project_scan` 扫描已保存的场景，定位缺失的素材和跳转目标，并查看需要在 Terre 预览时确认的引用。
+- **导入背景图和 BGM。** 开启写入并交接后，可从已登记的本机素材目录导入新文件。单文件最多 16 MiB，流式导入部分每批最多 32 MiB，已有同名文件会保留。
+
 ## 快速上手
 
 准备好 **Windows、Node.js 24、Git、Codex CLI** 和正在运行的 [WebGAL Terre](https://github.com/OpenWebGAL/WebGAL_Terre/releases)。请用 Terre 建一个试用工程，给开场加一句对白（例如「你好。」）并保存。下面用 `my-game` 作为工程 ID。
@@ -82,4 +90,4 @@ codex mcp list
 
 已验证 Windows + Codex + Terre。源码按 [PolyForm Noncommercial 1.0.0](LICENSE) 提供，限制商业使用；第三方依赖适用各自的许可证。
 
-想参与开发？查看[下一版开发计划](https://github.com/yuri77521/webgal-mcp-public/blob/main/docs/roadmap.md)。
+功能范围和实测结果见 [v0.2.0 Windows 与 Terre 验收记录](https://github.com/yuri77521/webgal-mcp-public/blob/main/docs/release-v0.2.0.md)。
