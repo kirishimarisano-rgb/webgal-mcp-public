@@ -145,10 +145,11 @@ export class SessionManager {
     id: string,
     ownerId: string,
     projectId: string,
-    paths: string[]
+    paths: string[],
+    options: { allowPausedForReplay?: boolean } = {}
   ): WriteSession {
     const session = this.sessions.get(id);
-    if (!session || session.state !== 'active') {
+    if (!session || (session.state !== 'active' && !(options.allowPausedForReplay && session.state === 'paused'))) {
       handoffRequired();
     }
     if (this.now() >= session.expiresAt) {

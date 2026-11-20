@@ -187,6 +187,20 @@ async function assertNoSymlinkSegments(rootResolved: string, relative: string): 
   }
 }
 
+export async function probeRegularFile(root: string, relative: string): Promise<void> {
+  const normalized = validateRelativePath(relative);
+  const canonicalRoot = await resolveAuthorizedRoot(root);
+  await assertNoSymlinkSegments(canonicalRoot, normalized);
+  const target = await resolveSafe(canonicalRoot, normalized);
+  try {
+    const entry = await lstat(target);
+    if (!entry.isFile() || entry.isSymbolicLink()) fileNotRegular();
+    await assertNoSymlinkSegments(canonicalRoot, normalized);
+  } catch (error) {
+    throwMappedReadError(error);
+  }
+}
+
 function snapshotMatches(before: BigIntStats, after: BigIntStats): boolean {
   return before.dev === after.dev
     && before.ino === after.ino

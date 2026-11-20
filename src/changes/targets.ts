@@ -2,6 +2,7 @@ import type { BigIntStats } from 'node:fs';
 import {
   link,
   lstat,
+  mkdir,
   open,
   realpath,
   rename,
@@ -158,8 +159,11 @@ function normalizeRevision(expectedRevision: string | null): string | null {
   return expectedRevision.toLowerCase();
 }
 
-function streamedAssetPath(relative: string): string {
+function streamedAssetPath(relative: string, modelDirectory?: string): string {
   const validated = assertWritePath(relative, true);
+  if (modelDirectory !== undefined && validated.startsWith(`${checkedModelDirectory(modelDirectory)}/`)) {
+    return validated;
+  }
   const match = /^game\/([^/]+)\/(.+)$/.exec(validated);
   if (!match || !STREAMED_ASSET_DIRECTORIES.has(match[1] as string)) {
     fail(
@@ -755,6 +759,65 @@ export async function assertCreateTargetAbsent(
   await assertTargetAbsentInContext(context);
 }
 
+export function checkedModelDirectory(directory: string): string {
+  if (!/^game\/figure\/[^/]+$/.test(directory)) {
+    fail('PATH_INVALID', 'Choose one new model directory under game/figure.');
+  }
+  return assertReferenceableTarget(directory);
+}
+
+function directoryIdentity(entry: BigIntStats): string {
+  return createHash('sha256').update(`${entry.dev}:${entry.ino}:${entry.birthtimeNs}`).digest('hex');
+}
+
+export async function modelDirectoryIdentity(root: string, relative: string): Promise<string | null> {
+  let context: TargetContext;
+  let entry: BigIntStats;
+  try {
+    context = await resolveTargetContext(root, relative);
+    entry = await lstat(context.target, { bigint: true });
+  } catch (error) {
+    if (isNodeError(error, ['ENOENT']) || (error instanceof AppError && error.code === 'FILE_NOT_FOUND')) return null;
+    throw error;
+  }
+  if (!entry.isDirectory() || entry.isSymbolicLink()) {
+    fail('PATH_INVALID', 'A model directory is no longer an ordinary directory.');
+  }
+  await assertContextUnchanged(context);
+  const current = await lstat(context.target, { bigint: true });
+  if (!current.isDirectory() || !sameFileIdentity(entry, current)) {
+    fail('FILE_CHANGED', 'A model directory changed during inspection.');
+  }
+  return directoryIdentity(entry);
+}
+
+export async function createModelDirectory(
+  root: string,
+  relative: string,
+  authorize: () => void,
+  validateAncestors: () => Promise<void>,
+): Promise<string> {
+  const context = await resolveTargetContext(root, relative);
+  await assertTargetAbsentInContext(context);
+  await validateAncestors();
+  await assertContextUnchanged(context);
+  authorize();
+  try {
+    await mkdir(context.target, { mode: 0o700 });
+  } catch (error) {
+    if (isNodeError(error, ['EEXIST'])) fail('TARGET_EXISTS', 'The model directory already exists.');
+    throw error;
+  }
+  const created = await lstat(context.target, { bigint: true });
+  await assertContextUnchanged(context);
+  await syncDirectory(context.parent);
+  const identity = directoryIdentity(created);
+  if (!created.isDirectory() || await modelDirectoryIdentity(root, relative) !== identity) {
+    fail('FILE_CHANGED', 'A newly created model directory no longer matches.');
+  }
+  return identity;
+}
+
 export function stagingRelative(
   relative: string,
   batchId: string,
@@ -781,9 +844,10 @@ export async function snapshotTarget(
 
 export async function streamedTargetRevision(
   root: string,
-  relative: string
+  relative: string,
+  modelDirectory?: string
 ): Promise<string | null> {
-  const context = await resolveTargetContext(root, streamedAssetPath(relative));
+  const context = await resolveTargetContext(root, streamedAssetPath(relative, modelDirectory));
   let snapshot: StreamedFileSnapshot;
   try {
     snapshot = await hashRegularFile(
@@ -824,9 +888,10 @@ export async function inspectStreamedStaging(
   root: string,
   relative: string,
   batchId: string,
-  index: number
+  index: number,
+  modelDirectory?: string
 ): Promise<{ present: boolean; bytes: number | null; revision: string | null }> {
-  const context = await resolveTargetContext(root, streamedAssetPath(relative));
+  const context = await resolveTargetContext(root, streamedAssetPath(relative, modelDirectory));
   const target = stagingPath(
     context,
     relative,
@@ -890,9 +955,10 @@ export async function publishStreamedAsset(
   stream: (write: (chunk: Buffer) => Promise<void>) => Promise<void>,
   batchId: string,
   index: number,
-  authorize?: () => void
+  authorize?: () => void,
+  model?: { directory: string; validateBeforePublish: () => Promise<void> }
 ): Promise<void> {
-  const validated = streamedAssetPath(relative);
+  const validated = streamedAssetPath(relative, model?.directory);
   const normalizedExpected = normalizeStreamedExpectation(expected);
   const normalizedBatchId = normalizeBatchId(batchId);
   const normalizedIndex = normalizeIndex(index);
@@ -1004,6 +1070,10 @@ export async function publishStreamedAsset(
     await assertTargetAbsentInContext(context);
     await assertContextUnchanged(context);
 
+    if (model) {
+      await model.validateBeforePublish();
+      await assertContextUnchanged(context);
+    }
     authorize?.();
     await publishCreateOnly(temporaryPath, context.target, rethrowStreamedIoError);
     published = true;

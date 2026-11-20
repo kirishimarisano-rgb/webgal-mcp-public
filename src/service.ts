@@ -7,6 +7,7 @@ import { scanProject, type ProjectScanInput } from './project-scan.js';
 import { inspectTerre, previewUrl, type TerreInspection } from './terre.js';
 import { AppError, publicError } from './errors.js';
 import { LIMITS, type AppConfig, type ProjectConfig } from './types.js';
+import { createLive2dSceneCheck } from './live2d/scene.js';
 
 export interface PageInput { cursor?: string; limit?: number }
 export function page<T>(items: T[], key: string, input: PageInput) {
@@ -152,7 +153,7 @@ export class ReadService {
     const document = candidateText === undefined ? await readText(project.root, scenePath(relative)) : null;
     const text = document?.text ?? candidateText!;
     if (Buffer.byteLength(text, 'utf8') > LIMITS.textBytes) throw new AppError('LIMIT_EXCEEDED', 'The scene exceeds the text limit.');
-    const analysis = await analyzeScene(text, relative, path => exists(project.root, path));
+    const analysis = await analyzeScene(text, relative, path => exists(project.root, path), { checkLive2d: createLive2dSceneCheck(project) });
     return { path: relative, source: document ? 'disk' : 'candidate', revision: document?.revision ?? null, ...analysis };
   }
   async assets(projectId: string, kind: AssetKind | undefined, input: PageInput) {

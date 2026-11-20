@@ -5,6 +5,7 @@ import { ReadService, ASSET_DIRS } from './service.js';
 import { PROJECT_SCAN_LIMITS } from './project-scan.js';
 import { LIMITS, type AppConfig } from './types.js';
 import { registerWriteTools, type WriteToolOptions } from './write-tools.js';
+import { inspectLive2dModel } from './live2d/model.js';
 
 const projectId = z.string().min(1).max(64);
 const relativePath = z.string().min(1).max(1024);
@@ -13,7 +14,7 @@ const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint
 
 export function createServer(config: AppConfig, options: WriteToolOptions = {}) {
   config = structuredClone(config);
-  const server = new McpServer({ name: 'webgal-mcp', version: '0.2.0' });
+  const server = new McpServer({ name: 'webgal-mcp', version: '0.3.0' });
   const service = new ReadService(config);
   const writeToolsEnabled = Boolean(options.stateRoot);
   async function result(operation: () => unknown | Promise<unknown>) {
@@ -61,6 +62,16 @@ export function createServer(config: AppConfig, options: WriteToolOptions = {}) 
   server.registerTool('scene_read', { description: 'Read a UTF-8 scene from disk with raw-byte SHA-256 revision and newline metadata. It may differ from unsaved Terre content.', inputSchema: z.object({ projectId, path: relativePath }).strict(), annotations }, args => result(() => service.scene(args.projectId, args.path)));
   server.registerTool('scene_validate', { description: 'Analyze scene syntax and static references without executing scripts or fetching resources. Dynamic references remain unresolved.', inputSchema: z.object({ projectId, path: relativePath, candidateText: z.string().max(LIMITS.textBytes).optional() }).strict(), annotations }, args => result(() => service.validate(args.projectId, args.path, args.candidateText)));
   server.registerTool('asset_list', { description: 'List existing assets in known game asset directories; no import, overwrite or download.', inputSchema: z.object({ projectId, kind: z.enum(Object.keys(ASSET_DIRS) as [keyof typeof ASSET_DIRS, ...(keyof typeof ASSET_DIRS)[]]).optional(), ...paging }).strict(), annotations }, args => result(() => service.assets(args.projectId, args.kind, args)));
+  server.registerTool('live2d_model_inspect', {
+    description: 'Inspect a .model3.json entry, its local dependencies, motion groups and expression names. Does not load Cubism or run the game.',
+    inputSchema: z.object({
+      location: z.discriminatedUnion('kind', [
+        z.object({ kind: z.literal('project'), projectId, modelPath: relativePath.describe('Relative to game/figure.') }).strict(),
+        z.object({ kind: z.literal('source'), sourceId: projectId, modelPath: relativePath.describe('Relative to the registered source.') }).strict(),
+      ]),
+    }).strict(),
+    annotations,
+  }, args => result(() => inspectLive2dModel(config, args.location)));
   server.registerTool('game_config_read', { description: 'Read game/config.txt as original text with a revision and parsed configuration summary.', inputSchema: z.object({ projectId }).strict(), annotations }, args => result(() => service.gameConfig(args.projectId)));
   server.registerTool('preview_get_url', { description: 'Return the configured official Terre preview URL. Does not open a browser, execute preview commands or prove the game runs.', inputSchema: z.object({ projectId }).strict(), annotations }, args => result(() => service.preview(args.projectId)));
   if (writeToolsEnabled) registerWriteTools(server, config, options, result);

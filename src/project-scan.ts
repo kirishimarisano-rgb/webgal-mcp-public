@@ -2,6 +2,7 @@ import { analyzeScene, type UnresolvedReference } from './analysis.js';
 import { AppError, publicError } from './errors.js';
 import { listFiles, readText, validateRelativePath } from './filesystem.js';
 import { LIMITS, type FileEntry, type ProjectConfig } from './types.js';
+import { createLive2dSceneCheck, type Live2dSceneIssue } from './live2d/scene.js';
 
 export const PROJECT_SCAN_LIMITS = Object.freeze({
   scenes: 100,
@@ -31,6 +32,7 @@ interface SceneResult {
   status: 'checked' | 'incomplete';
   reason: string | null;
   issues: Issue[];
+  live2dIssues: Live2dSceneIssue[];
 }
 
 type StopReason = 'inventory_error' | 'time_limit' | 'scene_limit' | 'report_limit';
@@ -89,6 +91,7 @@ export async function scanProject(
       throw new AppError('SCAN_TIME_LIMIT', 'The project scan time budget elapsed.');
     }
   }
+  const checkLive2d = createLive2dSceneCheck(project, checkpoint);
 
   function report() {
     const checkedScenes = scenes.filter(scene => scene.status === 'checked').length;
@@ -127,7 +130,7 @@ export async function scanProject(
   }
 
   for (const file of files.slice(scenesBeforeStart, scenesBeforeStart + limit)) {
-    const scene: SceneResult = { path: sceneRelative(file.path), status: 'incomplete', reason: null, issues: [] };
+    const scene: SceneResult = { path: sceneRelative(file.path), status: 'incomplete', reason: null, issues: [], live2dIssues: [] };
     // Reserve the row with its longest reason so a truncated row can always be returned.
     const rowBytes = jsonBytes({ ...scene, reason: 'SCENE_ANALYSIS_TRUNCATED' }) + 1;
     if (detailBytes + rowBytes > PROJECT_SCAN_LIMITS.detailBytes) {
@@ -136,6 +139,7 @@ export async function scanProject(
     }
 
     let references: UnresolvedReference[] = [];
+    let live2dIssues: Live2dSceneIssue[] = [];
     try {
       checkpoint();
       if (file.size > PROJECT_SCAN_LIMITS.sceneBytes) {
@@ -147,10 +151,12 @@ export async function scanProject(
       }
       const analysis = await analyzeScene(document.text, scene.path, exists, {
         checkpoint,
+        checkLive2d,
         onResponseTruncated: () => { scene.reason = 'SCENE_ANALYSIS_TRUNCATED'; },
       });
       checkpoint();
       references = analysis.unresolvedReferences;
+      live2dIssues = analysis.live2dIssues;
     } catch (error) {
       const { code } = publicError(error);
       if (code === 'SCAN_TIME_LIMIT') {
@@ -174,6 +180,18 @@ export async function scanProject(
       scene.issues.push(issue);
       detailBytes += issueBytes;
       if (reference.reason === 'check-failed') scene.reason ??= 'REFERENCE_CHECK_FAILED';
+    }
+    if (stopReason === null) {
+      for (const issue of live2dIssues) {
+        const issueBytes = jsonBytes(issue) + 1;
+        if (detailBytes + issueBytes > PROJECT_SCAN_LIMITS.detailBytes) {
+          scene.reason = 'REPORT_LIMIT';
+          stopReason = 'report_limit';
+          break;
+        }
+        scene.live2dIssues.push(issue);
+        detailBytes += issueBytes;
+      }
     }
     if (scene.reason === null) scene.status = 'checked';
     if (stopReason !== null) break;
