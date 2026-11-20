@@ -305,6 +305,7 @@ describe('P3 real stdio write server', () => {
       expect(tools.map((tool) => tool.name).sort()).toEqual([
         'asset_list',
         'game_config_read',
+        'live2d_model_inspect',
         'preview_get_url',
         'project_inspect',
         'project_list',
@@ -319,7 +320,7 @@ describe('P3 real stdio write server', () => {
     }
 
     const writeTools = (await client.listTools()).tools.map((tool) => tool.name);
-    expect(writeTools).toHaveLength(19);
+    expect(writeTools).toHaveLength(21);
     expect(writeTools).toEqual(expect.arrayContaining([
       'asset_source_list',
       'asset_source_inspect',
@@ -327,6 +328,7 @@ describe('P3 real stdio write server', () => {
       'write_session_end',
       'change_plan',
       'change_apply',
+      'live2d_import_plan',
       'recovery_inspect',
       'recovery_restore',
       'recovery_reclaim_lock'
@@ -942,5 +944,76 @@ describe('P3 real stdio write server', () => {
     expect(oldApply.data.error.code).toMatch(/HANDOFF_REQUIRED|SESSION_MISMATCH/);
     expect(await pathExists(targetPath)).toBe(false);
     expect(await snapshot(project)).toBe(before);
+  });
+
+  it('imports a complete model via stdio and applies a scene cue using its actual names', async () => {
+    const model = 'performed/hero.model3.json';
+    await mkdir(path.join(sourceRoot, 'performed/textures'), { recursive: true });
+    await mkdir(path.join(project, 'game/figure'), { recursive: true });
+    await writeFile(path.join(sourceRoot, model), JSON.stringify({
+      Version: 3,
+      FileReferences: {
+        Moc: 'hero.moc3', Textures: ['textures/main.png'],
+        Motions: { Surprise: [{ File: 'surprise.motion3.json' }] },
+        Expressions: [{ Name: 'Surprised', File: 'face.exp3.json' }],
+      },
+    }));
+    for (const file of ['hero.moc3', 'textures/main.png', 'surprise.motion3.json', 'face.exp3.json'])
+      await writeFile(path.join(sourceRoot, 'performed', file), file);
+    const source = (await call(client, 'asset_source_list')).data.sources[0].id;
+    const input = { projectId: 'test', sourceId: source, modelPath: model, targetDirectory: 'hero' };
+    const before = await snapshot(project);
+    const { data: inspection } = await call(client, 'live2d_model_inspect', {
+      location: { kind: 'source', sourceId: source, modelPath: model },
+    });
+    expect(inspection).toMatchObject({ status: 'valid', motions: [{ name: 'Surprise' }], expressions: [{ name: 'Surprised' }] });
+    const { data: draft } = await call(client, 'live2d_import_plan', input);
+    expect(draft).toMatchObject({ committable: false, planId: null, blockingIssues: [] });
+    expect(await snapshot(project)).toBe(before);
+    const { data: session } = await call(client, 'write_session_begin', {
+      projectId: 'test', paths: draft.paths, decision: 'saved-and-editors-closed',
+      statement: 'I saved and closed all editor pages for this test fixture.',
+    });
+    const { data: plan } = await call(client, 'live2d_import_plan', {
+      ...input, sessionId: session.sessionId, expectedBundleRevision: draft.bundleRevision,
+    });
+    expect(plan).toMatchObject({ committable: true, modelTargetPath: 'game/figure/hero/hero.model3.json' });
+    const { data: applied } = await call(client, 'change_apply', {
+      planId: plan.planId, sessionId: session.sessionId, idempotencyKey: 'live2d-stdio',
+    });
+    expect(applied.status).toBe('complete');
+    const { data: recovery } = await call(client, 'recovery_inspect', { projectId: 'test', batchId: applied.batchId });
+    expect(recovery.modelBundle.modelPath).toBe(plan.modelTargetPath);
+    for (const file of draft.files) expect(sha256(await readFile(path.join(project, file.path)))).toBe(file.revision);
+    await call(client, 'write_session_end', { sessionId: session.sessionId });
+    const scenePath = 'live2d-demo.txt';
+    const initialScene = 'changeFigure:hero/hero.model3.json -id=hero -left;\nHero:You are here?;\n';
+    const cue = 'changeFigure:hero/hero.model3.json -id=hero -left -motion=Surprise -expression=Surprised;\n';
+    await writeFile(path.join(sceneDirectory, scenePath), initialScene);
+    const { data: sceneRead } = await call(client, 'scene_read', { projectId: 'test', path: scenePath });
+    const { data: scene } = await call(client, 'scene_validate', {
+      projectId: 'test', path: scenePath, candidateText: sceneRead.text + cue,
+    });
+    expect(scene.live2dIssues).toEqual([]);
+    expect(scene.staticReferences).toContainEqual(expect.objectContaining({ path: plan.modelTargetPath, exists: true }));
+    const operations = [operation('edit_scene', {
+      path: scenePath, expectedRevision: sceneRead.revision,
+      edits: [{ start: sceneRead.text.length, end: sceneRead.text.length, text: cue }],
+    })];
+    const { data: sceneDraft } = await call(client, 'change_plan', { projectId: 'test', operations });
+    expect(sceneDraft.committable).toBe(false);
+    const { data: editSession } = await call(client, 'write_session_begin', {
+      projectId: 'test', paths: [`game/scene/${scenePath}`], decision: 'saved-and-editors-closed',
+      statement: 'I saved and closed all editor pages for the scene edit.',
+    });
+    const { data: scenePlan } = await call(client, 'change_plan', {
+      projectId: 'test', sessionId: editSession.sessionId, operations,
+    });
+    const { data: edit } = await call(client, 'change_apply', {
+      planId: scenePlan.planId, sessionId: editSession.sessionId, idempotencyKey: 'live2d-cue',
+    });
+    expect(edit.status).toBe('complete');
+    await call(client, 'write_session_end', { sessionId: editSession.sessionId });
+    expect(await readFile(path.join(sceneDirectory, scenePath), 'utf8')).toBe(initialScene + cue);
   });
 });

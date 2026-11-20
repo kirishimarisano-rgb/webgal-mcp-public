@@ -9,6 +9,7 @@ import { BusinessWriteService, type BusinessOperation } from './changes/business
 import { WRITE_LIMITS, type ApplyResult } from './changes/types.js';
 import { assertWritePath } from './changes/targets.js';
 import type { AppConfig } from './types.js';
+import { planLive2dImport } from './live2d/import.js';
 
 export interface WriteToolOptions { stateRoot?: string; coordinatorOptions?: CoordinatorOptions }
 type Result = (operation: () => unknown | Promise<unknown>) => Promise<CallToolResult>;
@@ -89,6 +90,19 @@ export function registerWriteTools(server: McpServer, config: AppConfig, options
     if (session && !session.batches.some(batch => batch.batchId === outcome.batchId)) session.batches.push({ batchId: outcome.batchId, status: outcome.status });
     return outcome;
   }));
+  server.registerTool('live2d_import_plan', {
+    description: 'Draft the create-only import of a .model3.json model and its dependencies. After user handoff, pass sessionId and the reviewed bundleRevision to create a plan for change_apply.',
+    inputSchema: z.object({
+      projectId: id, sourceId: id, modelPath: relative,
+      targetDirectory: z.string().min(1).max(255).describe('One new directory name under game/figure.'),
+      extraPaths: z.array(relative).max(WRITE_LIMITS.maxFiles).optional(),
+      sessionId: uuid.optional(), expectedBundleRevision: revision.optional(),
+    }).strict(),
+    annotations: { ...annotation, destructiveHint: false },
+  }, args => result(() => planLive2dImport(config, args, async (sessionId, files, model) => {
+    const { coordinator } = await getRuntime();
+    return coordinator.plan(ownerId, sessionId, args.projectId, files, undefined, undefined, model);
+  })));
   server.registerTool('write_session_end', { description: 'End this handoff and return control to the user. Report recorded batches; inspect partial/uncertain outcomes before resuming editing. Reopen Terre pages to load changed files.', inputSchema: z.object({ sessionId: uuid }).strict(), annotations: { ...annotation, destructiveHint: false } }, args => result(async () => {
     const { coordinator } = await getRuntime();
     coordinator.sessions.end(args.sessionId, ownerId);

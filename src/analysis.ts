@@ -4,6 +4,7 @@ import SceneParserImport, {
 } from 'webgal-parser';
 import { AppError } from './errors.js';
 import { LIMITS } from './types.js';
+import type { Live2dSceneCheck, Live2dSceneIssue } from './live2d/scene.js';
 
 const SceneParserCtor = (
   typeof SceneParserImport === 'function'
@@ -151,6 +152,7 @@ export interface SceneAnalysis {
   diagnostics: Diagnostic[];
   staticReferences: StaticReference[];
   unresolvedReferences: UnresolvedReference[];
+  live2dIssues: Live2dSceneIssue[];
   limitations: string[];
 }
 
@@ -170,6 +172,7 @@ interface ParsedSentence {
   command: number;
   commandRaw: string;
   content: string;
+  args: { key: string; value: string | number | boolean }[];
   sentenceAssets: ParsedAsset[];
   subScene: string[];
   startLine: number;
@@ -206,9 +209,10 @@ export async function analyzeScene(
   text: string,
   scenePath: string,
   exists: (projectRelativePath: string) => Promise<boolean>,
-  { checkpoint, onResponseTruncated }: {
+  { checkpoint, onResponseTruncated, checkLive2d }: {
     checkpoint?: () => void;
     onResponseTruncated?: () => void;
+    checkLive2d?: Live2dSceneCheck;
   } = {},
 ): Promise<SceneAnalysis> {
   checkpoint?.();
@@ -232,12 +236,32 @@ export async function analyzeScene(
   const staticReferences: StaticReference[] = [];
   const unresolvedReferences: UnresolvedReference[] = [];
   const existenceCache = new Map<string, Promise<boolean>>();
+  const live2dIssues: Live2dSceneIssue[] = [];
+  const live2dIssueLimit = 128;
+  let live2dTruncated = false;
 
   for (const sentence of sentences) {
     checkpoint?.();
     const startLine = sentence.startLine + 1;
     const endLine = sentence.endLine + 1;
     const rawContent = rawSentenceContent(sceneLines, sentence);
+    if (checkLive2d && !live2dTruncated && sentence.commandRaw === 'changeFigure'
+      && rawContent.toLowerCase().endsWith('.model3.json')) {
+      const issues = await checkLive2d({
+        rawPath: rawContent,
+        dynamicPath: hasDynamicToken(rawContent),
+        line: startLine,
+        endLine,
+        motion: sentence.args.find(arg => arg.key === 'motion')?.value,
+        expression: sentence.args.find(arg => arg.key === 'expression')?.value,
+      });
+      const available = live2dIssueLimit - live2dIssues.length;
+      live2dIssues.push(...issues.slice(0, available));
+      if (issues.length > available || issues.some(issue => ['MODEL_INSPECTION_LIMIT', 'FILE_TOO_LARGE'].includes(issue.code))) {
+        live2dTruncated = issues.length > available;
+        onResponseTruncated?.();
+      }
+    }
     for (const asset of sentence.sentenceAssets) {
       checkpoint?.();
       const kind = assetKind(asset.type);
@@ -363,6 +387,7 @@ export async function analyzeScene(
       `Sentence summaries were truncated at the ${LIMITS.entries}-entry limit.`,
     );
   }
+  if (live2dTruncated) limitations.push('Live2D diagnostics reached the per-scene limit.');
 
   const result: SceneAnalysis = {
     sentenceCount: sentences.length,
@@ -370,6 +395,7 @@ export async function analyzeScene(
     diagnostics,
     staticReferences,
     unresolvedReferences,
+    live2dIssues,
     limitations,
   };
   return enforceResponseLimit(result, [
@@ -377,6 +403,7 @@ export async function analyzeScene(
     'diagnostics',
     'staticReferences',
     'unresolvedReferences',
+    'live2dIssues',
   ], onResponseTruncated);
 }
 

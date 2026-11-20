@@ -12,6 +12,20 @@ v0.2.0 已合入 `main`。按下面的步骤从源码构建即可使用。
 - **导出前检查。** 用 `project_scan` 扫描已保存的场景，定位缺失的素材和跳转目标，并查看需要在 Terre 预览时确认的引用。
 - **导入背景图和 BGM。** 开启写入并交接后，可从已登记的本机素材目录导入新文件。单文件最多 16 MiB，流式导入部分每批最多 32 MiB，已有同名文件会保留。
 
+## 用 Codex 编排一段 Live2D 演出
+
+v0.3.0 支持检查和导入标准 `.model3.json` 模型。先按 [WebGAL 的 Live2D 配置说明](https://docs.openwebgal.com/live2D.html) 准备运行库，再使用 Terre 的专用测试工程试用。[模型检查和整包导入示例](docs/tool-reference.md#live2d-模型与演出) 包含素材登记、审阅和交接步骤。已在 Windows、Codex CLI 和 Terre 4.6.7 的专用工程使用官方 Haru 样本验证整包导入、立绘显示、动作播放和表情切换。
+
+模型准备好后，可以把下面这段话交给 Codex，换成实际工程、角色和对白：
+
+```text
+请在 my-game 的 start.txt 中找到「你怎么在这里？」这句对白。
+用 live2d_model_inspect 查看 hero/hero.model3.json 的动作组与表情名，
+从实际存在的选项中挑一个适合惊讶的动作和表情，在这句对白后加一段演出。
+保留角色 ID、站位和其他参数。位置、角色或可用动作有歧义时先问我。
+用 scene_validate 检查候选文本，再用 change_plan 给我看草案，等我确认。
+```
+
 ## 快速上手
 
 准备好 **Windows、Node.js 24、Git、Codex CLI** 和正在运行的 [WebGAL Terre](https://github.com/OpenWebGAL/WebGAL_Terre/releases)。请用 Terre 建一个试用工程，给开场加一句对白（例如「你好。」）并保存。下面用 `my-game` 作为工程 ID。

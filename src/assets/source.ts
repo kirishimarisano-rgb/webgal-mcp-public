@@ -484,6 +484,15 @@ export async function describeAssetSource(
   }
 }
 
+export async function probeAssetSource(config: AppConfig, sourceId: string, relative: string): Promise<void> {
+  const opened = await openSource(config, sourceId, relative, Number.MAX_SAFE_INTEGER);
+  try {
+    await assertSourceUnchanged(opened, Number(opened.before.size), Number.MAX_SAFE_INTEGER);
+  } finally {
+    await opened.handle.close();
+  }
+}
+
 export async function copyAssetSource(
   config: AppConfig,
   sourceId: string,

@@ -30,6 +30,7 @@ CLI 通过 stdio（标准输入输出）与客户端通信。直接在终端启�
 | `scene_read` | UTF-8 原文、原始字节 SHA-256、BOM 和换行信息 |
 | `scene_validate` | 解析磁盘或候选文本，检查静态引用；不执行脚本、不下载 URL |
 | `asset_list` | 列出背景、立绘、BGM、语音、视频、动画目录的既有文件元数据 |
+| `live2d_model_inspect` | 检查 `.model3.json` 的结构和本机文件依赖，列出动作组和表情名 |
 | `game_config_read` | `game/config.txt` 原文、版本及解析摘要 |
 | `preview_get_url` | 返回配置对应的官方预览 URL；不打开浏览器、不遥控、不证明游戏已运行 |
 
@@ -86,7 +87,7 @@ CLI 通过 stdio（标准输入输出）与客户端通信。直接在终端启�
 node dist/cli.js --config webgal-mcp.local.json --state-root "<absolute-private-state-directory>"
 ```
 
-将同样的 `--state-root` 参数加入客户端启动 args，重启 MCP 连接后可发现 19 个工具。状态目录必须在所有工程和素材来源之外，且不能包含它们；不使用游戏目录存放备份/日志。状态目录包含原始剧情和备份，不加密、不自动清理。相对 state-root 基于启动目录，建议使用绝对路径。
+将同样的 `--state-root` 参数加入客户端启动 args，再重启 MCP 连接。状态目录必须在所有工程和素材来源之外，且不能包含它们；不使用游戏目录存放备份/日志。状态目录包含原始剧情和备份，不加密、不自动清理。相对 state-root 基于启动目录，建议使用绝对路径。
 
 新增工具：
 
@@ -96,6 +97,7 @@ node dist/cli.js --config webgal-mcp.local.json --state-root "<absolute-private-
 | `asset_source_inspect` | 来源文件原始 SHA-256 与大小，不向模型发送二进制 |
 | `write_session_begin` | 记录本次用户保存/离开声明、工程和精确路径范围；未准备好时拒绝并撤销该工程先前交接 |
 | `change_plan` | 创建/编辑场景、导入素材、修改配置的有界方案；无会话只生成不可提交草案 |
+| `live2d_import_plan` | 审阅 Live2D 模型包及目标文件；交接后生成供 `change_apply` 使用的计划 |
 | `change_apply` | 版本及来源复核、全部备份后提交；同计划同键幂等重放 |
 | `write_session_end` | 交回编辑权，返回本会话记录的批次摘要 |
 | `recovery_inspect` | 检查批次、当前磁盘、备份、锁；支持 planId 查询和历史分页 |
@@ -121,3 +123,12 @@ node dist/cli.js --config webgal-mcp.local.json --state-root "<absolute-private-
 保留 planId：回执丢失或进程重启后，可用 `recovery_inspect` 的 projectId + planId 查到已完成或未完成批次，不需要旧会话；旧会话不能恢复写权限。无过滤时仅发现未完成批次，`includeCompleted=true` 可查历史，分页使用 offset/limit。恢复必须有新鲜交接及用户选择，拒绝后来的人工修改，不删除新建文件或备份。崩溃维护 guard 和 staging 残留需操作者核对处理，不自动清除；手动打包前先检查残留。
 
 流式素材的恢复报告还列出 `sourceBytes`、`stagingBytes` 和 `stagingVerified`。计划内容是否已发布看 `diskState`，暂存是否残留看 `stagingPresent`。出现空间不足或中断时，先根据这两处确认磁盘状态再决定是否重做。
+
+## Live2D 模型与演出
+
+1. **检查模型。** 工程内模型用 `live2d_model_inspect({ location: { kind: "project", projectId: "my-game", modelPath: "hero/hero.model3.json" } })`，路径相对于 `game/figure`。导入前在 `sources` 登记素材目录，再用 `{ kind: "source", sourceId: "assets", modelPath: "hero/hero.model3.json" }` 作为 `location`。返回的依赖路径相对于模型目录，`valid` 表示结构和依赖文件通过静态检查。查看 `motions` 的组名和组内文件，以及 `expressions` 的名称和文件。
+2. **审阅导入。** `live2d_import_plan({ projectId: "my-game", sourceId: "assets", modelPath: "hero/hero.model3.json", targetDirectory: "hero" })` 返回草案。核对 `paths`、文件大小和 SHA-256、`bundleRevision` 与 `blockingIssues`。可用 `extraPaths` 指定相对于模型目录的额外模型、图片或音频文件。模型包最多 32 个文件、32 MiB，单文件最多 16 MiB。目标在现有 `game/figure` 下，目录名必须尚未被占用。
+3. **交接后应用。** 在 Terre 保存并关闭工程的全部编辑页，明确交接草案中的精确 `paths`。再次调用导入计划，补上 `sessionId` 和 `expectedBundleRevision`。审阅正式计划后另行确认应用，再调用 `change_apply` 和 `write_session_end`。应用模型包需要安装在 Windows 标准位置的 PowerShell 7，用于发布目录并保留已占用的名称。模型入口最后发布。中断时用 `recovery_inspect` 查看 `modelBundle`、`directories`、各文件的 `diskState` 和暂存信息。若某个目录留下暂存，目录记录的 `stagingPath` 会列出它相对于工程根目录的路径。重试前先确认现场，再选一个新目标目录并重新交接。
+4. **编排演出。** 用 `scene_read` 找到确切对白和立绘上下文，根据模型检查结果选动作组和表情。用 `scene_validate` 检查完整候选文本，再用 `change_plan` 审阅该段修改。动作和表情更新时保留原立绘 ID、站位和其他必要参数。用户交接、确认应用并交回后，在 Terre 重新打开场景并预览。
+
+`scene_validate` 返回 `live2dIssues`，`project_scan` 在每个场景下列出同一组诊断，包含行号、模型入口和可安全显示的依赖或参数。静态分析使用 WebGAL 4.6.7 的动作组和表情名称规则。实际渲染、动作混合和导出由 Terre 验证。Cubism 运行库由使用者按 [WebGAL 文档](https://docs.openwebgal.com/live2D.html) 配置。

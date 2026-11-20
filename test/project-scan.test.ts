@@ -34,8 +34,8 @@ it('checks existing Chinese scene and asset paths without following a cycle', as
   expect(report.complete).toBe(true);
   expect(report.scope).toMatchObject({ totalScenes: 2, checkedScenes: 2, incompleteScenes: 0, remainingScenes: 0 });
   expect(report.scenes).toEqual([
-    { path: 'start.txt', status: 'checked', reason: null, issues: [] },
-    { path: '章节/回到开场.txt', status: 'checked', reason: null, issues: [] },
+    { path: 'start.txt', status: 'checked', reason: null, issues: [], live2dIssues: [] },
+    { path: '章节/回到开场.txt', status: 'checked', reason: null, issues: [], live2dIssues: [] },
   ]);
 });
 
