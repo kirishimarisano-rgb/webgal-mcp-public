@@ -4,6 +4,8 @@ const maxSceneBytes = 1024 * 1024;
 const maxRequestBytes = 12 * maxSceneBytes;
 const revisionFormat = /^[a-f0-9]{64}$/;
 const fragmentFormat = /^F[0-9]{3,}$/;
+const idMarker = /^<!--\s*(?:scene|fragment)\s*:/u;
+const fenceMarker = /^ {0,3}(`{3,}|~{3,})(.*)$/u;
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function requireCondition(condition, code, message) {
@@ -18,6 +20,52 @@ function requireText(value, name) {
   );
 }
 
+function requireSceneText(value, name) {
+  requireText(value, name);
+  // Match the control characters rejected by the server's scene editor.
+  requireCondition(!/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value),
+    'INVALID_TEXT', name + ' contains a control character unsupported in WebGAL scenes.');
+}
+
+function withoutComments(line, comment) {
+  let visible = '';
+  let offset = 0;
+  while (offset < line.length) {
+    const delimiter = comment.open ? '-->' : '<!--';
+    const next = line.indexOf(delimiter, offset);
+    if (next === -1) return comment.open ? visible : visible + line.slice(offset);
+    if (!comment.open) visible += line.slice(offset, next);
+    comment.open = !comment.open;
+    offset = next + delimiter.length;
+  }
+  return visible;
+}
+
+function* storyLines(storyText) {
+  const comment = { open: false };
+  let fence;
+  for (const raw of storyText.replace(/^\uFEFF/, '').split(/\r\n|\n|\r/)) {
+    const line = raw.trim();
+    const marker = fenceMarker.exec(raw);
+    if (fence) {
+      if (marker && marker[1].startsWith(fence) && !marker[2].trim()) fence = undefined;
+      else if (line) yield ''; // Fenced code is visible but cannot introduce structure.
+      continue;
+    }
+    if (!comment.open && marker && (marker[1][0] === '~' || !marker[2].includes('`'))) {
+      fence = marker[1];
+      continue;
+    }
+    if (!comment.open && idMarker.test(line) && line.includes('-->')) {
+      yield line;
+      continue;
+    }
+    const canStartStructure = !comment.open && !line.startsWith('<!--');
+    const visible = withoutComments(raw, comment).trim();
+    if (visible) yield canStartStructure ? visible : '';
+  }
+}
+
 function storyIds(storyText) {
   requireText(storyText, 'storyText');
   const scenes = new Map();
@@ -26,9 +74,7 @@ function storyIds(storyText) {
   let waitingForScene = false;
   let needsContent = false;
 
-  for (const rawLine of storyText.replace(/^\uFEFF/, '').split(/\r\n|\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
+  for (const line of storyLines(storyText)) {
     if (/^##\s+[^#]/u.test(line)) {
       requireCondition(!waitingForScene && !needsContent, 'INVALID_ID', 'A scene or fragment is incomplete.');
       waitingForScene = true;
@@ -51,10 +97,10 @@ function storyIds(storyText) {
       needsContent = true;
       continue;
     }
-    requireCondition(!/^<!--\s*(?:scene|fragment)\b/u.test(line), 'INVALID_ID', 'An ID marker is malformed or out of place.');
+    requireCondition(!idMarker.test(line), 'INVALID_ID', 'An ID marker is malformed or out of place.');
     if (sceneId) {
       requireCondition(scenes.get(sceneId).length > 0, 'INVALID_ID', 'Scene content must start with a fragment ID.');
-      if (!/^<!--/u.test(line)) needsContent = false;
+      needsContent = false;
     }
   }
   requireCondition(
@@ -77,8 +123,29 @@ function isSafeBoundary(text, offset) {
   return !splitsCharacter && !(left === 13 && right === 10);
 }
 
-function locateEdit(text, change, sceneId, fragments) {
-  const { fragmentId, before, after, left = '', right = '', removed = false } = change ?? {};
+const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function synchronizedScene(scriptMap, sceneId, scene) {
+  requireCondition(scriptMap?.schemaVersion === 1 && isRecord(scriptMap.scenes), 'INVALID_BASELINE',
+    'Supply the existing version 1 script-map.json for the selected project.');
+  const mapped = scriptMap.scenes[sceneId];
+  requireCondition(mapped?.path === scene.path && typeof mapped.verifiedRevision === 'string' && revisionFormat.test(mapped.verifiedRevision), 'INVALID_BASELINE',
+    'The saved scene path or revision baseline does not match the script map for ' + sceneId + '.');
+
+  const fragments = new Map();
+  for (const [owner, entry] of Object.entries(scriptMap.scenes)) {
+    requireCondition(isRecord(entry?.fragments) && (owner === sceneId || entry.path !== scene.path), 'INVALID_BASELINE',
+      'The script map must identify one owner for the target path and contain a fragment map for each scene.');
+    for (const [id, fragment] of Object.entries(entry.fragments)) {
+      requireCondition(!fragments.has(id), 'INVALID_BASELINE', 'More than one scene maps fragment ' + id + '.');
+      fragments.set(id, { owner, fragment });
+    }
+  }
+  return { fragments, drifted: mapped.verifiedRevision !== scene.revision };
+}
+
+function locateEdit(text, change, sceneId, fragments, baseline) {
+  const { fragmentId, before, after, removed = false } = change ?? {};
   const validId = typeof fragmentId === 'string' && fragmentFormat.test(fragmentId);
   requireCondition(
     validId && (
@@ -89,7 +156,19 @@ function locateEdit(text, change, sceneId, fragments) {
     'INVALID_ID',
     'The fragment is missing, belongs to another scene, or is not an explicitly removed ID.',
   );
-  for (const [name, value] of Object.entries({ before, after, left, right })) requireText(value, name);
+  const previous = baseline.fragments.get(fragmentId);
+  requireCondition(previous ? previous.owner === sceneId && isRecord(previous.fragment) : !removed && before === '',
+    'INVALID_BASELINE', 'Only a fragment synchronized to this scene may replace or remove saved text.');
+  const original = previous?.fragment;
+  const { left = original?.left ?? '', right = original?.right ?? '' } = change;
+  for (const [name, value] of Object.entries({ before, after, left, right })) requireSceneText(value, name);
+  if (original) {
+    requireCondition(before === original.webgal, 'TARGET_CHANGED', 'The before text disagrees with the synchronized fragment.');
+    requireCondition(typeof original.left === 'string' && typeof original.right === 'string' &&
+      original.left.endsWith(left) && original.right.startsWith(right), 'TARGET_CHANGED',
+      'Anchors must match the synchronized fragment or narrow its recorded context.');
+    requireCondition(!baseline.drifted || left || right, 'AMBIGUOUS_TARGET', 'A changed scene needs recorded context to identify the fragment.');
+  }
   requireCondition(before !== after, 'EMPTY_EDIT', 'The replacement must change the target.');
 
   const anchor = left + before + right;
@@ -120,7 +199,7 @@ function patch(input, { scenes, fragments }) {
     'INVALID_SNAPSHOT',
     'Supply the original scene_read result for a saved UTF-8 scene.',
   );
-  requireText(scene.text, 'scene.text');
+  requireSceneText(scene.text, 'scene.text');
   const bytes = encodeScene(scene.text, scene.encoding);
   requireCondition(
     bytes.length <= maxSceneBytes && bytes.length === scene.bytes && sha256(bytes) === scene.revision,
@@ -129,7 +208,8 @@ function patch(input, { scenes, fragments }) {
   );
   requireCondition(Array.isArray(changes) && changes.length >= 1 && changes.length <= 256, 'INVALID_RANGE', 'Supply 1 to 256 fragment changes.');
 
-  const edits = changes.map(change => locateEdit(scene.text, change, sceneId, fragments));
+  const baseline = synchronizedScene(input.scriptMap, sceneId, scene);
+  const edits = changes.map(change => locateEdit(scene.text, change, sceneId, fragments, baseline));
   edits.sort((first, second) => first.start - second.start);
   const parts = [];
   let cursor = 0;
