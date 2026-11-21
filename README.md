@@ -4,8 +4,19 @@
 
 ## 环境要求
 
-- **制作或编辑游戏**：Windows、Codex CLI、Git、Node.js 24.x 和 WebGAL Terre。已在 **Terre 4.6.7.0** 完成实机验收，其他版本的兼容性待验证。[Terre 验收记录](docs/release-v0.2.0.md)
-- **管理素材库**：Librarian 只需 Codex 和 Python 3.10 或更高版本，可以独立使用。
+- **制作或编辑游戏（Creator / Editor）**需要 Windows、Codex CLI、Git、Node.js **24.x** 和 WebGAL Terre。**Terre 4.6.7.0** 已通过实机验收。
+- **只管理素材库（Librarian）**需要 Codex 和 Python **3.10 或更高版本**。
+
+本机版本供安装时参考：
+
+| 工具 | 本机版本 |
+| --- | --- |
+| Windows | Windows 11 25H2（64 位） |
+| Codex CLI | `0.167.0-alpha.4.1` |
+| Git for Windows | `2.54.0.windows.1` |
+| Node.js / npm | `24.9.0` / `11.6.0` |
+| WebGAL Terre | `4.6.7.0` |
+| Python | `3.12.10` |
 
 ## 快速上手
 
