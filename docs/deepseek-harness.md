@@ -141,7 +141,7 @@ $repo = (Get-Location).Path.Replace('\', '/')
 | 报 `CONFIG_NOT_FOUND` 或 `--state-root` 位置异常 | `dsh` 启动子进程时的 `cwd` 可能与仓库目录不同（尤其开启会话目录相关选项时），相对路径会发生漂移。 | 将 `args` 中的 `dist/cli.js`、`--config` 和 `--state-root` 全部改为 Windows 绝对路径，重启后重试。 |
 | 重启 `dsh`、编辑 `cordis.patch.yml` 热重载或断连重连后，写入报 `HANDOFF_REQUIRED` 或 `SESSION_MISMATCH` | `webgal-mcp` 将写会话绑定在单次 `stdio` 连接上，连接断开或重载会立即撤销旧会话，不允许继承旧写权限。 | 确认 Terre 编辑页仍处于已保存且关闭状态，重新向模型明确交接并生成新计划；若上一批已提交但回执丢失，可直接用 `recovery_inspect` 传入 `projectId` 和 `planId` 查询（无需旧会话）。 |
 | 已经在 `dsh` 里点了“允许工具调用”，为什么仍不能直接写入 | `dsh` 的工具审批只授权客户端发起工具调用，不代表 WebGAL Terre 中未保存的编辑页已经落盘关闭。 | 按流程在 Terre 中手动保存并关闭该工程的全部编辑页，再明确文字回复交接。 |
-| 导入 Live2D 模型包时在精简环境下报 `CREATE_ONLY_UNSUPPORTED` 或 `WRITE_FAILED` | `dsh-mcp-client` 会对 `stdio` 子进程清洗环境变量；Live2D 目录发布需调用 Windows 标准位置的 PowerShell 7（`Program Files\PowerShell\7\pwsh.exe`）。`webgal-mcp` 已在缺少 `ProgramFiles`/`SystemRoot` 时提供默认回退，若本机安装路径非默认盘符仍需显式传入。 | 确认已安装 PowerShell 7；如系统盘或安装目录非 `C:\`，在 `dsh` 的 `webgal` 配置 `env` 中显式补充 `ProgramFiles` 与 `SystemRoot`，重启后重试。 |
+| 导入 Live2D 模型包时在精简环境下报 `CREATE_ONLY_UNSUPPORTED` 或 `WRITE_FAILED` | `dsh-mcp-client` 会清洗 `stdio` 子进程继承的环境变量（默认仅移除名称含 `KEY`/`TOKEN`/`SECRET`/`PASSWORD` 的变量及 `DSH_*`，`ProgramFiles`/`SystemRoot` 通常会保留）；Live2D 目录发布需调用 Windows 标准位置的 PowerShell 7（`Program Files\PowerShell\7\pwsh.exe`）。`webgal-mcp` 另在缺少 `ProgramFiles`/`SystemRoot` 时提供防御性默认回退（`C:\Program Files`、`C:\Windows`），若本机安装路径非默认盘符仍需显式传入。 | 确认已安装 PowerShell 7；如系统盘或安装目录非 `C:\`，在 `dsh` 的 `webgal` 配置 `env` 中显式补充 `ProgramFiles` 与 `SystemRoot`，重启后重试。 |
 
 ## 验证范围与真机验收清单
 
@@ -155,7 +155,7 @@ $repo = (Get-Location).Path.Replace('\', '/')
 - 模拟 `dsh` `stdio` 探针（`initialize → listTools → 立即关闭`）不会创建或写入 `--state-root`、不留锁、`stderr` 为空且干净退出；随后正式拉起可正常读写。
 - 全量 21 个工具的 JSON Schema 与元数据审计（顶层 `type: "object"`、`additionalProperties: false`、无 `$ref`/`$defs`、无不兼容正则、`mcp__webgal__*` 命名与注解准确）。
 - 正常返回、业务错误和参数校验错误下，`content[0].text` 与 `structuredContent` 保持一致且不返回空 `content`。
-- 模拟精简环境变量（`scrubbed env`）与异地 `cwd` 启动读写正常，且验证 `directoryPublisherEnv` 在缺失 `ProgramFiles`/`SystemRoot` 时的安全回退。
+- 模拟精简环境变量（`scrubbed env`，SDK 仍会合并其默认基础变量，因此为“精简”而非完全为空）与异地 `cwd` 启动读写正常，且验证 `directoryPublisherEnv` 在缺失 `ProgramFiles`/`SystemRoot` 时的安全回退。
 - 模拟 `dsh` 重启/重连：断开连接后旧 `sessionId` 立即失效，且 `recovery_inspect` 仍可凭 `planId` 查到既有批次。
 
 上述测试**仅证明协议与运行时契约**，不等同于真实 `Windows + dsh + DeepSeek 模型 + WebGAL Terre` 端到端验收。

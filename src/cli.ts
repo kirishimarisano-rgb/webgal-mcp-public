@@ -18,6 +18,8 @@ async function main() {
     if (closed) return;
     closed = true;
     detachSignals();
+    const forceExit = setTimeout(() => process.exit(process.exitCode ?? 0), 3000);
+    forceExit.unref();
     void handle.close().catch(() => {});
   };
   process.once('SIGINT', shutdown);
