@@ -1,0 +1,4 @@
+interface:
+  display_name: "WebGAL Librarian"
+  short_description: "Index, tag and find shared WebGAL assets"
+  default_prompt: "请用 $webgal-librarian 接管我指定的素材文件夹，建立或更新 INDEX.md。"

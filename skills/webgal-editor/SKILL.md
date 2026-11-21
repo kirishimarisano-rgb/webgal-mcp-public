@@ -1,0 +1,36 @@
+---
+name: webgal-editor
+description: Locate and edit dialogue, narration and staging in saved scenes of existing WebGAL Terre projects. Review local diffs, inspect prior edits by plan ID and selectively undo them while preserving later hand edits.
+---
+
+# WebGAL Editor
+
+Use the registered webgal MCP and Node.js 24. The source of truth is the current project's saved scene. A hand-authored game needs no Creator installation, story.md or script-map.json. Leave any existing Creator documents to their own synchronization workflow.
+
+## Locate and preview
+
+1. Resolve the intended project with `webgal_status` and `project_inspect`. Verify the project mapping before a handoff. Page through `scene_list`; resolve a named location using filenames, labels, background cues, dialogue and incoming scene links as needed. Read plausible scenes with `scene_read`.
+2. Match the user's *spoken text* within the requested scene, speaker and context. Inspect the raw commands alongside `scene_validate` sentence ranges from the same revision. Account for options, comments, explicit speakers, narrator forms, speaker carry-over and multi-line commands. Exclude stage commands, commented lines and hits in arguments. For an ordinal, count matching utterances in saved script order **after** resolving scene and speaker. Apply a clear ordinal directly. If branching, unidentified speakers, multiple scenes or cues leave plausible alternatives, show each scene, line, speaker and neighboring context and ask the user to choose. A missing match merits a short explanation or close candidates.
+3. For music, effects and expressions, inspect relevant state before the target, including figure ID, position, active BGM, conditions, `-next` and earlier scene calls. Page through `asset_list` for the correct kind (BGM in bgm, effect in vocal). For a model use `live2d_model_inspect` to verify expression names. Resolve ambiguous assets by relative filename with the user. Check existing engine/project syntax for timing and staging. Insert a cue immediately before the selected utterance; preserve surrounding commands, comments, argument order, voice and formatting. If the requested scope depends on a conditional, confirm the cue runs on the same path. For a pause, confirm the supported timing command and units.
+4. Build the smallest contiguous block for the requested cue(s). For distinct, distant edits use separate local edits/receipts rather than owning the intervening scene. Work from the original `scene_read` result. Use the helper below. Keep the original internal line endings, BOM, and trailing newline; use the local line ending between inserted commands. Show the user the actual local diff with unchanged context, the scene path, selected occurrence and resolved assets. Run the existing `change_plan({projectId,operations})` draft; check paths, diagnostics and predicted after hashes. A draft cannot be applied.
+
+## Helper
+
+Run `node <installed-skill>/scripts/local-edit.mjs`. Send UTF-8 JSON on stdin. It writes JSON to stdout and exits nonzero on conflict. All modes require the verified `projectId` and original `scene` from `scene_read`.
+
+- `mode: "find", needle` lists literal line hits and adjacent text. Use a short dialogue substring so quotes, options or alternate speaker spellings do not hide candidates. Determine semantic matches from the saved commands before counting.
+- `mode: "draft", firstLine, lastLine, before, after` takes a reviewed 1-based inclusive range (`lastLine` defaults to `firstLine`). Supply the complete exact lines, excluding the last line terminator. Include the adjacent dialogue if inserting/removing a whole stage command. Output contains a single UTF-16 `edit_scene` operation, predicted `afterRevision` and a reversible local `receipt`. For distant blocks in one file, individual drafts may be reviewed and applied as separate batches with independent approvals.
+- `mode: "undo", receipt` produces a reverse draft against the current saved scene. The receipt is the inner object from the original helper result. A changed file requires unique matching applied text and recorded neighboring context. Inspect staging dependencies for semantic drift as well. Any conflict requires user choice.
+
+## Handoff, apply and readback
+
+1. Ask the user to save successfully and close **all editing pages for this project**. Wait for their explicit current reply. Begin `write_session_begin` using the draft's exact `paths`, `decision: "saved-and-editors-closed"`, and the user's actual statement. Keep the same MCP connection.
+2. Re-read the scene and relevant dependencies. Compare to the reviewed snapshot and the intended ordinal, surrounding cues and asset choice. For drift end the session. Show baseline, current text and proposal. Offer to keep the hand edit, retarget or make a new draft on top of it. Even unrelated changes need a freshly reviewed draft against the new revision. Never shift an old ordinal onto another line automatically.
+3. Generate `change_plan` again with the session ID and the reviewed operation. Compare its paths, before/after revisions, diagnostics and diff to the draft. Present the formal plan ID and local diff. Wait for separate explicit approval of this plan. If the session expires, end/reopen with fresh handoff and repeat formal approval.
+4. Keep a local private receipt **before** applying, e.g. under the user's home directory in `.webgal-editor/receipts/<projectId>/<planId>.json` (use safe filenames). Store the verified project identity including preview URL, timestamp, pending status, plan ID, idempotency key and helper receipt. Use a new file per plan, outside all game roots and Git. Apply the exact plan with `change_apply`. Read the scene back and compare its raw revision to the predicted after hash. Recheck affected lines and references via `scene_validate`. Record the result and end the session. For failed, partial, uncertain or missing replies, inspect by plan ID and resolve any lock warnings before asking the user to reopen. Reuse an idempotency key only for the same plan. Report the plan ID and actual readback. When requested, spot-check only the changed location in Chrome.
+
+## History and undo
+
+For “what changed”, verify the project binding and use `recovery_inspect({projectId,planId})` plus the receipt to show the actual batch status and local before/after. If the ID is unknown, page history with `includeCompleted:true` and match private receipts. Clarify which change if there are several plausible matches. Inspect an interrupted pending record before considering an undo.
+
+For an applied edit, read the current scene and use the reverse helper. Preview its diff and follow the same handoff, formal plan approval and readback. Save a new receipt with the original plan ID as `undoOf`. Later edits outside the uniquely identified block are preserved. If the target or staging dependencies were hand-edited, show original, applied and current passages and ask what to keep. If the receipt is unavailable, `recovery_inspect` still provides batch history. Offer `recovery_restore` only for explicitly selected files whose *entire current version* matches the batch output, with fresh handoff and separate approval of the restore scope. A file version mismatch requires a reviewed local edit or user resolution.
