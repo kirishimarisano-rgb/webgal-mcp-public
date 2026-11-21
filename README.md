@@ -1,50 +1,50 @@
 # webgal-mcp
 
-用 Codex 创作和编辑 WebGAL 视觉小说。你可以检查 Terre 工程的素材和场景、修改对白，或把文章改编成可玩的线性短篇。
+用 Codex 和自然语言制作 WebGAL 视觉小说。**Creator** 把故事改编成游戏，**Editor** 修改已有游戏，**Librarian** 帮你从素材库里找背景、立绘和音乐。
+
+## 环境要求
+
+- **制作或编辑游戏（Creator / Editor）**需要 Windows、Codex CLI、Git、Node.js **24.x** 和 WebGAL Terre。**Terre 4.6.7.0** 已通过实机验收。
+- **只管理素材库（Librarian）**需要 Codex 和 Python **3.10 或更高版本**。
+
+本机版本供安装时参考：
+
+| 工具 | 本机版本 |
+| --- | --- |
+| Windows | Windows 11 25H2（64 位） |
+| Codex CLI | `0.167.0-alpha.4.1` |
+| Git for Windows | `2.54.0.windows.1` |
+| Node.js / npm | `24.9.0` / `11.6.0` |
+| WebGAL Terre | `4.6.7.0` |
+| Python | `3.12.10` |
 
 ## 快速上手
 
-**把下面这段话交给 Codex Agent，让它帮你安装。**
+把下面这段复制给 Codex，即可让它安装三个 Skill：
 
 ```text
-请帮我在 Windows 上安装 webgal-mcp 和 webgal-creator。
-仓库：https://github.com/yuri77521/webgal-mcp-public
-
-先检查 Git、Node.js 24、Codex CLI 和 WebGAL Terre，能复用的就复用。如果工作区已有这个仓库，请沿用当前版本，否则从上面的地址克隆。构建 MCP，并把 skills/webgal-creator 整个目录安装到我的 Codex Skills 目录。
-帮我选择一个 Terre 测试工程，再把它登记到 Codex 的 webgal MCP。如果我还没有工程，请告诉我怎么在 Terre 建一个并保存一句对白。
-新配置默认只读，保留我的其他 MCP 配置和工程文件。接通后，用 webgal_status 检查连接和工程映射，再用 scene_read 读开场对白。需要我启动 Terre、选工程或重启 Codex 时，请告诉我具体怎么做。
+请从 https://github.com/yuri77521/webgal-mcp-public 安装 webgal-mcp，
+并安装 webgal-creator、webgal-editor 和 webgal-librarian 三个 Skill。
+请复用已有安装并保留现有配置。帮我以只读方式连接一个 Terre 测试工程，
+读出开场第一句，让我确认选对了游戏。
 ```
 
-想自己配置，可查看 [Windows 手动安装](docs/tool-reference.md#手动安装)。
-
-## 用 Librarian 管理共享素材库
-
-多个 WebGAL 工程可以共用一个素材文件夹。Librarian 在库根维护 `INDEX.md`，记录背景、立绘、BGM 和音效的相对路径、描述、标签、来源与授权。只需 Codex 和 Python 3.10+ 即可单独使用。[单独安装 Librarian](docs/tool-reference.md#单独安装-librarian)
-
-安装后，在新对话里把示例路径换成你的素材文件夹：
-
-```text
-请用 $webgal-librarian 接管「D:\WebGAL素材库」，扫描并建立或更新 INDEX.md，保留素材原档、档名和手动标注。
-```
-
-首次接管已有素材的目录时，Librarian 会问你要保留目录，还是先看分类整理方案。选择整理后，你可先核对每个文件的旧路径和新路径，确认后才会移动。日常重扫会保留同一路径的手动标注。
-
-之后可以说「给这首曲子加上『放学后』标签」，或「找适合放学后、安静又有离别感的 BGM」。Librarian 会列出当前可读的候选文件、相对路径和匹配理由，找不到时会说明缺口。
+如果只想整理素材，可以只让 Codex 安装 `webgal-librarian`。[手动安装](docs/tool-reference.md#手动安装) · [单独安装 Librarian](docs/tool-reference.md#单独安装-librarian)
 
 ## 用 Creator Skill 把文章做成短篇
 
-装好后，把文章交给 Codex，再发送这句：
+> 请用 $webgal-creator 把这篇文章改成一部短篇视觉小说。先给我看剧本，我确认后再选背景、立绘和音乐。
 
-```text
-请用 $webgal-creator 把这篇文章改编成 WebGAL 短篇，使用我已登记的 Terre 测试工程。先给我 Markdown 剧本，等我确认。
-```
+## 用 Editor 修改已有工程
 
-确认剧本后，Agent 会列出素材用途和必需或可选项，再跟你确认来源。做好后会抽查指定场景。想让Agent从头到尾试玩一次，可以明确要求「完整验收」。
+> 请用 $webgal-editor 把车站场景里，小澪第二次说的「没事」改成「再陪我一下」，并在这句之前播放工程里已有的那首 BGM。
 
-## 试改一处对白
+手工制作的 Terre 工程也可以直接修改。Editor 会先展示改动的位置；有多个可能时，会列出前后文让你选。之后也可以说「撤销刚才那次修改」。
 
-默认只读。要改游戏，先[开启受控写入](docs/tool-reference.md#启用受控写入)，再让 Agent 给你看改动草案。每批应用前，请在 Terre 保存并关闭该工程的全部编辑页，明确交接，再单独批准正式计划。遇到部分写入或结果不确定时，按[恢复提示](docs/tool-reference.md#连接与试改排查)处理。
+**写入游戏前**，先看改动，再保存并关闭该工程的全部 Terre 编辑页。Codex 会重新核对内容，等你单独批准正式计划后才写入。[启用工程写入](docs/tool-reference.md#启用受控写入)
 
-[Creator Skill](skills/webgal-creator/) · [工具参考](docs/tool-reference.md) · [Live2D 模型与演出](docs/tool-reference.md#live2d-模型与演出)
+## 用 Librarian 管理共享素材库
 
-源码按 [PolyForm Noncommercial 1.0.0](LICENSE) 提供，限制商业使用。第三方依赖适用各自的许可证。
+> 请用 $webgal-librarian 扫描我的素材文件夹，保持目录原样，只建索引。帮我找一首适合「放学后在车站告别」的 BGM。
+
+[工具参考](docs/tool-reference.md) · [许可证：PolyForm Noncommercial 1.0.0](LICENSE)
