@@ -15,6 +15,15 @@ npm run build
 
 按下方[本机配置](#本机配置)登记工程和 MCP。要使用 Creator Skill，把 [`skills/webgal-creator`](../skills/webgal-creator/) 整个目录复制到 `~/.agents/skills/webgal-creator`，在 Codex 中调用 `$webgal-creator`。如果找不到 Skill，重启 Codex。[Codex Skill 安装说明](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)
 
+### 单独安装 Librarian
+
+准备 Codex 和 Python 3.10 或更高版本。如果只管理共享素材库，可以跳过上面的 MCP 构建和 Terre 工程登记。
+
+1. 从仓库中把整个 [`skills/webgal-librarian`](../skills/webgal-librarian/) 目录复制到 `~/.agents/skills/webgal-librarian`，保留其中的 `scripts/`、`references/` 和 `agents/`。
+2. 在 PowerShell 运行 `python --version` 确认版本。在新 Codex 对话中调用 `$webgal-librarian`，并提供素材库路径。可直接复制 [README 的接管示例](../README.md#用-librarian-管理共享素材库)。
+
+每个库的 `INDEX.md` 都可以手动编辑。字段、标签分隔符和相对路径写法见[索引格式](../skills/webgal-librarian/references/index-format.md)。
+
 ## 本机配置
 
 在仓库目录创建本机配置 `webgal-mcp.local.json`，用实际工程路径和 Terre 端口替换示例值。

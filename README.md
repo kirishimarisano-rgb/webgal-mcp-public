@@ -17,6 +17,20 @@
 
 想自己配置，可查看 [Windows 手动安装](docs/tool-reference.md#手动安装)。
 
+## 用 Librarian 管理共享素材库
+
+多个 WebGAL 工程可以共用一个素材文件夹。Librarian 在库根维护 `INDEX.md`，记录背景、立绘、BGM 和音效的相对路径、描述、标签、来源与授权。只需 Codex 和 Python 3.10+ 即可单独使用。[单独安装 Librarian](docs/tool-reference.md#单独安装-librarian)
+
+安装后，在新对话里把示例路径换成你的素材文件夹：
+
+```text
+请用 $webgal-librarian 接管「D:\WebGAL素材库」，扫描并建立或更新 INDEX.md，保留素材原档、档名和手动标注。
+```
+
+首次接管已有素材的目录时，Librarian 会问你要保留目录，还是先看分类整理方案。选择整理后，你可先核对每个文件的旧路径和新路径，确认后才会移动。日常重扫会保留同一路径的手动标注。
+
+之后可以说「给这首曲子加上『放学后』标签」，或「找适合放学后、安静又有离别感的 BGM」。Librarian 会列出当前可读的候选文件、相对路径和匹配理由，找不到时会说明缺口。
+
 ## 用 Creator Skill 把文章做成短篇
 
 装好后，把文章交给 Codex，再发送这句：
