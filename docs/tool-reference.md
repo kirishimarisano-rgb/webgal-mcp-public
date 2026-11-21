@@ -1,10 +1,50 @@
 # webgal-mcp 工具参考
 
-第一次使用请先看 [README 快速上手](../README.md)。本页说明工具、路径和写入限制，供需要手动配置或排查问题时查阅。
+第一次使用请先看 [README 快速上手](../README.md#快速上手)。如果你想从文章开始创作，见 [Creator Skill 用法](../README.md#用-creator-skill-把文章做成短篇)。本页说明工具、路径和写入限制。
+
+## 手动安装
+
+准备 Windows、Git、Node.js 24、Codex CLI 和 [WebGAL Terre](https://github.com/OpenWebGAL/WebGAL_Terre/releases)。启动 Terre，在测试工程里保存一句开场对白。在 PowerShell 中下载并构建 MCP：
+
+```powershell
+git clone https://github.com/yuri77521/webgal-mcp-public.git
+cd webgal-mcp-public
+npm ci
+npm run build
+```
+
+按下方[本机配置](#本机配置)登记工程和 MCP。要使用 Creator Skill，把 [`skills/webgal-creator`](../skills/webgal-creator/) 整个目录复制到 `~/.agents/skills/webgal-creator`，在 Codex 中调用 `$webgal-creator`。如果找不到 Skill，重启 Codex。[Codex Skill 安装说明](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)
 
 ## 本机配置
 
-Codex CLI 的 `codex mcp add` 可生成配置。要手动配置时，请使用 Codex 的 `config.toml`：
+在仓库目录创建本机配置 `webgal-mcp.local.json`，用实际工程路径和 Terre 端口替换示例值。
+
+```json
+{
+  "version": 1,
+  "projects": [
+    {
+      "id": "my-game",
+      "root": "C:/Games/Terre/my-game",
+      "terreUrl": "http://127.0.0.1:3001",
+      "terreGameDir": "my-game"
+    }
+  ],
+  "sources": []
+}
+```
+
+在仓库目录登记到 Codex：
+
+```powershell
+$repoPath = (Get-Location).Path
+codex mcp add webgal -- node "$repoPath/dist/cli.js" --config "$repoPath/webgal-mcp.local.json"
+codex mcp list
+```
+
+重新打开 Codex，让它用 `webgal_status` 检查 `my-game`，并用 `scene_read` 读 `start.txt` 的开场对白。遇到问题可查[连接与试改排查](#连接与试改排查)。
+
+也可以手动填写 Codex 的 `config.toml`：
 
 ```toml
 [mcp_servers.webgal]
@@ -56,7 +96,7 @@ CLI 通过 stdio（标准输入输出）与客户端通信。直接在终端启�
 | `writeToolsEnabled: false` | 检查 MCP 启动参数是否有 `--state-root` 和独立状态目录。 | 更新参数后重启 MCP，再确认 `writeToolsEnabled` 为 `true`。 |
 | `HANDOFF_REQUIRED` 或 `SESSION_EXPIRED` | 确认本批已经在 Terre 保存、关闭该工程的编辑页，并由用户明确交接。 | 重新交接，生成新计划并再次确认后再应用。 |
 | 生成计划时出现 `REVISION_CONFLICT` | 重新读取目标文件，核对后来保存的内容。 | 按当前内容重新交接和生成计划，核对改动后再应用。 |
-| 应用失败、部分完成、结果不确定或回执丢失 | 保留 `planId`，先用 `recovery_inspect` 查看实际磁盘和批次状态。 | 确认结果后再决定是否重新交接并生成新计划。 |
+| 应用失败、部分完成、结果不确定或回执丢失 | 保留 `planId` 并保持编辑页关闭。先用 `recovery_inspect` 核对磁盘和批次状态，并处理相关锁警告。 | 确认可继续编辑后再重开 Terre。若需重试，重新交接并生成新计划。 |
 
 ## 限制与数据边界
 
@@ -99,14 +139,14 @@ node dist/cli.js --config webgal-mcp.local.json --state-root "<absolute-private-
 | `change_plan` | 创建/编辑场景、导入素材、修改配置的有界方案；无会话只生成不可提交草案 |
 | `live2d_import_plan` | 审阅 Live2D 模型包及目标文件；交接后生成供 `change_apply` 使用的计划 |
 | `change_apply` | 版本及来源复核、全部备份后提交；同计划同键幂等重放 |
-| `write_session_end` | 交回编辑权，返回本会话记录的批次摘要 |
+| `write_session_end` | 结束写入会话并返回批次摘要。部分完成或结果不确定时，先核对恢复状态，再重开 Terre |
 | `recovery_inspect` | 检查批次、当前磁盘、备份、锁；支持 planId 查询和历史分页 |
 | `recovery_restore` | 仅恢复用户选定且当前版本匹配的旧文件，先备份恢复前内容 |
 | `recovery_reclaim_lock` | 使用检查得到的 token 显式回收已确认死亡的 MCP 锁；活/未知 owner、维护残留均拒绝 |
 
 先读取工程并形成草案。写入前，客户端必须通过正常用户交互取得**本次明确答复**：同工程所有编辑页已经成功保存并离开。然后以 `decision=saved-and-editors-closed` 和用户原始答复建立会话；未答复、尚未保存或保存失败时不能代填确认。`userAttested` 只是声明记录，不能证明所有 buffer 已保存；Server 无法验证声明确实来自人类。旧答复不能用于重启后的新会话。
 
-会话默认5分钟，绑定连接、工程和精确目标范围。交接后重新生成方案，确认改动后 apply，完成后 end。用户再重新打开 Terre 编辑页，手动预览/打包。`webgal_status.writable=false` 表示没有不带会话的全局写权限；是否启用写工具看 `writeToolsEnabled`。
+会话默认 5 分钟，绑定连接、工程和精确目标范围。交接后重新生成方案，确认改动后应用并回读，最后结束会话。遇到部分完成或结果不确定时，先用 `recovery_inspect` 核对磁盘并处理相关锁警告。确认可继续编辑后，用户再重新打开 Terre 编辑页预览或打包。`webgal_status.writable=false` 表示没有不带会话的全局写权限。是否启用写入工具见 `writeToolsEnabled`。
 
 路径和操作约定：
 
