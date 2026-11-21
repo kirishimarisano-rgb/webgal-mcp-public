@@ -76,6 +76,8 @@ codex mcp list
 
 如果 Codex 已打开，先重启，再试下面的只读练习。
 
+使用 DeepSeek Harness（`dsh`）时，请按 [DeepSeek Harness 接入指南](docs/deepseek-harness.md) 配置 `Settings → MCP` 或 `cordis.patch.yml`。
+
 ### 4. 检查连接并读开场
 
 复制这段话给 Codex。若你在配置里用了其他工程 ID，把 `my-game` 换成你的 ID。
