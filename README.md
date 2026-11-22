@@ -4,7 +4,7 @@
 
 ## 环境要求
 
-- **制作或编辑游戏（Creator / Editor）**需要 Windows、Git、Node.js **24.x** 和 WebGAL Terre，客户端可选 Codex 或 DSH。
+- **制作或编辑游戏（Creator / Editor）**需要 Windows 或 Linux、Git、Node.js **24.x** 和 WebGAL Terre，客户端可选 Codex 或 DSH（Linux 导入 Live2D 模型包另需 Python 3 与支持 `renameat2` 的内核/文件系统；下方本机版本以已真机验收的 Windows 环境为例）。
 - **只管理素材库（Librarian）**需要 Codex 或 DSH，以及 Python **3.10 或更高版本**。
 
 本机版本供安装时参考：
