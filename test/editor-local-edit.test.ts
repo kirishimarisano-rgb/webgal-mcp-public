@@ -42,6 +42,38 @@ function stationEdit(scene: object) {
 }
 
 describe('standalone Editor', () => {
+  it('inserts music at separate dialogue boundaries and matches the candidate and undo byte for byte', () => {
+    const scene = snapshot(original);
+    const cues = [
+      { line: 1, before: ':車站 🚉;', track: '行程/出發.mp3' },
+      { line: 3, before: ':她看了看車票。;', track: '到了.mp3' },
+      { line: 4, before: dialogue, track: 'none' },
+      { line: 5, before: ':車來了。;', track: '行程/出發.mp3' }
+    ];
+    const result = run(scene, { mode: 'bgm', cues });
+    const expected = ['bgm:行程/出發.mp3 -next;', ':車站 🚉;', dialogue, 'bgm:到了.mp3 -next;',
+      ':她看了看車票。;', 'bgm:none -next;', dialogue, 'bgm:行程/出發.mp3 -next;', ':車來了。;'].join('\r\n');
+    expect(result.candidateText).toBe(expected);
+    expect(result.afterRevision).toBe(snapshot(expected).revision);
+    expect(applySceneEdits(Buffer.from('\ufeff' + original), result.operation.edits)).toEqual(Buffer.from('\ufeff' + expected));
+    expect(run(snapshot(expected), { mode: 'undo', receipt: result.receipt }).afterRevision).toBe(scene.revision);
+    expect(invoke(scene, { mode: 'bgm', cues: [cues[0], cues[0]] }).status).toBe(1);
+    expect(invoke(scene, { mode: 'bgm', cues: [{ ...cues[0], track: 'x;end;' }] }).status).toBe(1);
+  });
+
+  it('inserts a horizontal move before the selected line and preserves the spoken bytes on undo', () => {
+    const text = '角色2:到了。;\n' + dialogue + '\r\n' + dialogue;
+    const scene = snapshot(text);
+    const move = { mode: 'move', firstLine: 3, before: dialogue, target: '小澪', x: -280, duration: 220 };
+    const edit = run(scene, move);
+    const cue = 'setTransform:{"position":{"x":-280}} -target=小澪 -duration=220 -ease=easeOut -keep -next;';
+    const expected = text.slice(0, text.lastIndexOf(dialogue)) + cue + '\r\n' + dialogue;
+    expect(applySceneEdits(Buffer.from('\ufeff' + text), edit.operation.edits)).toEqual(Buffer.from('\ufeff' + expected));
+    expect(run(snapshot(expected), { mode: 'undo', receipt: edit.receipt }).afterRevision).toBe(scene.revision);
+    expect(invoke(scene, { ...move, before: 'changed' }).status).toBe(1);
+    expect(invoke(scene, { ...move, target: 'other;end' }).status).toBe(1);
+  });
+
   it('changes just the second line and its cue; reverses both after an unrelated hand edit', () => {
     const edit = stationEdit(snapshot(original));
     const expected = original.slice(0, original.lastIndexOf(dialogue)) + replacement + '\r\n:車來了。;';
