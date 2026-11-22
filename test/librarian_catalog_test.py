@@ -195,7 +195,7 @@ class CatalogTest(unittest.TestCase):
         target = "game/background/class.png"
         project("remember", "--scene", scene, "--cue", "bg", "--path", key, "--target", target)
         self.assertEqual(project("recall", "--scene", "start.txt", "--target", "background/class.png"),
-                         {"库根": str(self.lib), "选材": {"路径": key, "工程目标": target}})
+                         {"库根": str(self.lib.resolve()), "选材": {"路径": key, "工程目标": target}})
         self.assertEqual(project("recall", "--scene", scene, "--cue", "bg")["选材"]["路径"], key)
         self.assertEqual(project("recall", "--scene", scene)["用途示例"], ["bg"])
         self.assertIsNone(project("recall", "--scene", scene, "--cue", "BGM")["选材"])
