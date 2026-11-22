@@ -23,4 +23,5 @@ jobs:
           node-version-file: .node-version
       - run: npm ci
       - run: npm run check
+      - run: python -X utf8 -m unittest discover -s test -p "librarian*_test.py"
       - run: npm test
