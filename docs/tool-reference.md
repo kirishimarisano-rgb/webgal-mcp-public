@@ -22,7 +22,7 @@ npm run build
 1. 从仓库中把整个 [`skills/webgal-librarian`](../skills/webgal-librarian/) 目录复制到 `~/.agents/skills/webgal-librarian`，保留其中的 `scripts/`、`references/` 和 `agents/`。
 2. 在 PowerShell 运行 `python --version` 确认版本。在新 Codex 对话中调用 `$webgal-librarian`，并提供素材库路径。可直接复制 [README 的接管示例](../README.md#用-librarian-管理共享素材库)。
 
-每个库的 `INDEX.md` 都可以手动编辑。字段、标签分隔符和相对路径写法见[索引格式](../skills/webgal-librarian/references/index-format.md)。
+根 `INDEX.md` 链接到可手动编辑的 Markdown 分册。Creator 和 Editor 使用 Librarian 的有界搜索与本机项目选材记录，可直接从故事初选延续到表情替换。字段、标签分隔符和相对路径写法见[索引格式](../skills/webgal-librarian/references/index-format.md)。
 
 ## 本机配置
 
