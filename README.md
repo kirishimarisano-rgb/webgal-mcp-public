@@ -28,13 +28,13 @@ v0.3.0 支持检查和导入标准 `.model3.json` 模型。先按 [WebGAL 的 Li
 
 ## 快速上手
 
-准备好 **Windows、Node.js 24、Git、Codex CLI** 和正在运行的 [WebGAL Terre](https://github.com/OpenWebGAL/WebGAL_Terre/releases)。请用 Terre 建一个试用工程，给开场加一句对白（例如「你好。」）并保存。下面用 `my-game` 作为工程 ID。
+准备好 **Windows 或 Linux、Node.js 24、Git、Codex CLI** 和正在运行的 [WebGAL Terre](https://github.com/OpenWebGAL/WebGAL_Terre/releases)。请用 Terre 建一个试用工程，给开场加一句对白（例如「你好。」）并保存。下面用 `my-game` 作为工程 ID。
 
 ### 1. 下载并构建
 
-在 PowerShell 中运行：
+在 PowerShell（Windows）或终端（Linux）中运行：
 
-```powershell
+```bash
 git clone https://github.com/yuri77521/webgal-mcp-public.git
 cd webgal-mcp-public
 npm ci
@@ -68,8 +68,18 @@ npm run build
 
 仍在刚才的目录，用 [Codex CLI 的 MCP 命令](https://developers.openai.com/codex/mcp)登记服务：
 
+Windows（PowerShell）：
+
 ```powershell
 $repoPath = (Get-Location).Path
+codex mcp add webgal -- node "$repoPath/dist/cli.js" --config "$repoPath/webgal-mcp.local.json"
+codex mcp list
+```
+
+Linux（bash）：
+
+```bash
+repoPath="$(pwd)"
 codex mcp add webgal -- node "$repoPath/dist/cli.js" --config "$repoPath/webgal-mcp.local.json"
 codex mcp list
 ```
@@ -90,7 +100,7 @@ codex mcp list
 
 ## 试改一处对白
 
-在 [Codex 的 MCP 配置](https://developers.openai.com/codex/mcp)里，给 `webgal` 的启动参数末尾加上 `"--state-root", "C:/Games/webgal-mcp-state"`，再重启 Codex。状态目录存放改动记录和备份，应与所有游戏及素材目录分开。用 `webgal_status` 核对 `writeToolsEnabled` 为 `true`。
+在 [Codex 的 MCP 配置](https://developers.openai.com/codex/mcp)里，给 `webgal` 的启动参数末尾加上 `"--state-root", "C:/Games/webgal-mcp-state"`（Linux 如 `"/home/<user>/webgal-mcp-state"`），再重启 Codex。状态目录存放改动记录和备份，应与所有游戏及素材目录分开。用 `webgal_status` 核对 `writeToolsEnabled` 为 `true`。
 
 1. **先看草案。** 把下面的提示发给 Codex，沿用只读练习的工程 ID 和场景相对路径。
 
@@ -104,6 +114,6 @@ codex mcp list
 
 工具参数、可修改的内容和恢复方法见[工具参考](docs/tool-reference.md)。
 
-已验证 Windows + Codex + Terre。源码按 [PolyForm Noncommercial 1.0.0](LICENSE) 提供，限制商业使用；第三方依赖适用各自的许可证。
+已真机验证 Windows + Codex + Terre；Linux 已适配并通过全量自动化测试（Live2D 模型整包导入需 Python 3 与支持 `renameat2` 的内核/文件系统）。源码按 [PolyForm Noncommercial 1.0.0](LICENSE) 提供，限制商业使用；第三方依赖适用各自的许可证。
 
 功能范围和实测结果见 [v0.2.0 Windows 与 Terre 验收记录](https://github.com/yuri77521/webgal-mcp-public/blob/main/docs/release-v0.2.0.md)。
