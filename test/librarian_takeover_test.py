@@ -31,10 +31,13 @@ class TakeoverTest(unittest.TestCase):
                 with self.subTest(command=command):
                     self.call(command, root, success=False)
                     self.assertEqual(list(root.iterdir()), [media])
-            self.assertEqual(self.call("scan", root, "--layout-confirmed")["新增"], 1)
+            scan = self.call("scan", root, "--layout-confirmed")
+            self.assertEqual((scan["新增"], scan["待决定"]), (0, 1))
+            self.assertEqual(self.call("search", root)["候选"], [])
+            self.call("assign", root, media.name, "--type", "BGM", "--group", "散放")
             self.call("tag", root, media.name, "告别")
             self.assertEqual(self.call("scan", root)["新增"], 0)
-            row, = self.call("candidates", root)
+            row = self.call("show", root, "--path", media.name)
             self.assertEqual((row["路径"], row["标签"]), (media.name, "告别"))
             self.assertEqual(media.read_bytes(), b"fixture")
 

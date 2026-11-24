@@ -1,246 +1,210 @@
-"""Maintain a WebGAL asset INDEX.md with the Python 3.10+ standard library."""
+"""Search and maintain a local WebGAL Markdown catalog (Python 3.10+)."""
 import argparse
-from contextlib import contextmanager
+from collections import Counter
 import json
-import os
-from pathlib import Path, PureWindowsPath
-import stat
+from pathlib import Path
 import sys
-import tempfile
 
-HEADER = "# WebGAL 素材库\n\n<!-- webgal-librarian v1 -->\n"
-FIELDS = ("名称", "类型", "描述", "标签", "来源", "授权")
-IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif", ".bmp"}
-AUDIO = {".ogg", ".mp3", ".wav", ".m4a", ".flac", ".aac", ".opus", ".weba"}
-CATEGORIES = {
-    "背景": {"bg", "background", "backgrounds", "背景"},
-    "立绘": {"figure", "figures", "portrait", "portraits", "立绘", "立繪"},
-    "BGM": {"bgm", "music", "音乐", "音樂", "配乐", "配樂"},
-    "音效": {"se", "sfx", "soundeffect", "soundeffects", "音效", "効果音"},
-}
-UNKNOWN = "未知"
+from books import assign, books, edit, lookup, manifest, pending_summary, recover, scan
+from catalog import CATEGORIES, FIELDS, check_key, discover, readable, writing
 
 
-def linked(path):
-    info = path.lstat()
-    return stat.S_ISLNK(info.st_mode) or bool(
-        getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
-    )
+def encode(obj):
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
-def check_key(key):
-    if (not key or any(part in {"", ".", ".."} for part in key.split("/"))
-            or "\\" in key or any(ord(ch) < 32 for ch in key)
-            or PureWindowsPath(key).drive or (os.name == "nt" and ":" in key)):
-        raise ValueError(f"无效的库内相对路径 {key!r}")
+def rows(loaded):
+    for (kind, group), book in loaded.items():
+        for key, row in book.rows.items():
+            yield kind, group, key, {field: cell[1] for field, cell in row.items()}
 
 
-def category(key):
-    path = Path(key)
-    image = path.suffix.lower() in IMAGES
-    choices = ("背景", "立绘") if image else ("BGM", "音效")
-    for part in reversed(path.parent.parts):
-        for choice in choices:
-            if part.casefold() in CATEGORIES[choice]:
-                return choice
-    return "图片待分类" if image else "音频待分类"
+def excerpt(text, term):
+    start = max(0, text.casefold().find(term) - 16)
+    return text[start:start + 72]
 
 
-def discover(root):
-    def visit(directory):
-        for path in sorted(directory.iterdir(), key=lambda p: p.name):
-            if linked(path):
-                continue
-            if path.is_dir():
-                if path.name != ".git":
-                    yield from visit(path)
-            elif path.is_file() and path.suffix.lower() in IMAGES | AUDIO:
-                key = path.relative_to(root).as_posix()
-                check_key(key)
-                yield key
-
-    return set(visit(root))
-
-
-def readable(root, key, names):
-    path = root
-    try:
-        for part in key.split("/"):
-            # Case-only renames can leave the old spelling openable on Windows.
-            if path not in names:
-                names[path] = {entry.name for entry in path.iterdir()}
-            if part not in names[path]:
-                return False
-            path = path / part
-            if linked(path):
-                return False
-        if path.is_file():
-            with path.open("rb") as media:
-                media.read(1)
-            return True
-    except (FileNotFoundError, NotADirectoryError, PermissionError):
-        pass
-    return False
-
-
-def read_index(path):
-    try:
-        if linked(path) or not path.is_file():
-            raise ValueError(f"{path.name} 必须是普通文件")
-        return path.read_bytes()
-    except FileNotFoundError:
-        return None
-
-
-def parse(raw):
-    text = HEADER if raw is None else raw.decode("utf-8-sig")
-    if not text.replace("\r\n", "\n").startswith(HEADER):
-        raise ValueError("INDEX.md 已存在且格式不同，已保留原文件。请选择迁移方式或其他素材库。")
-    lines = text.splitlines(keepends=True)
-    rows = {}
-    row = None
-    for number, line in enumerate(lines):
-        value = line.rstrip("\r\n")
-        if value.startswith("## "):
-            key = value[3:]
-            check_key(key)
-            if key in rows:
-                raise ValueError(f"重复路径 {key}，请核对两条记录的手动注记")
-            row = rows[key] = {}
-        elif row is not None and value.startswith("- "):
-            field, sep, content = value[2:].partition(":")
-            if sep and field in FIELDS:
-                if field in row:
-                    raise ValueError(f"{key} 的 {field} 栏重复")
-                row[field] = (number, content.removeprefix(" "))
-    for key, row in rows.items():
-        if row.keys() != set(FIELDS):
-            raise ValueError(f"{key} 缺少字段 {', '.join(set(FIELDS) - row.keys())}")
-    return lines, rows
-
-
-@contextmanager
-def writing(root):
-    lock = root / ".webgal-librarian.lock"
-    try:
-        lock.mkdir()
-    except FileExistsError:
-        raise ValueError("素材库有写入锁。请等待当前操作结束；若上次中断，先检查锁的归属。") from None
-    try:
-        yield
-    finally:
-        lock.rmdir()
+def search(args, root, loaded, words):
+    terms = list(dict.fromkeys(t.strip().casefold() for t in words if t.strip()))
+    if args.directory:
+        check_key(args.directory)
+    if args.offset < 0:
+        raise ValueError("offset 须为非负整数")
+    hits = []
+    for _, _, key, fields in rows(loaded):
+        if args.directory and not key.startswith(args.directory + "/"):
+            continue
+        ordinary = [fields[f].casefold() for f in ("名称", "描述", "标签")]
+        if not all(any(word.casefold() in value for value in ordinary) for word in args.require):
+            continue
+        # Rights conditions use whole-field matches; a negation must never match a grant.
+        if args.license is not None and (fields["授权"].strip() in ("", "未知")
+                                          or fields["授权"].strip().casefold() != args.license.strip().casefold()):
+            continue
+        if args.source is not None and (fields["来源"].strip() in ("", "未知")
+                                         or args.source.casefold() not in fields["来源"].casefold()):
+            continue
+        evidence = []
+        score = 0
+        matched = 0
+        for term in terms:
+            for field, weight in (("标签", 4), ("名称", 3), ("描述", 2)):
+                value = fields[field]
+                if term in value.casefold():
+                    score += weight
+                    matched += 1
+                    if field == "标签":
+                        sample = next((t for t in value.split("、") if term in t.casefold()), term)
+                    else:
+                        sample = excerpt(value, term)
+                    if sample not in evidence:
+                        evidence.append(sample[:72])
+                    break
+        if terms and not matched:
+            continue
+        if not evidence:
+            evidence.append(fields["名称"][:72])
+        description = fields["描述"]
+        if description:
+            # Distinguish nearby variants on the first page (the observation often follows shared metadata).
+            observation = description.rpartition("画面观察：")[2]
+            snippet = next((excerpt(observation, t) for t in terms if t in observation.casefold()),
+                           observation[-72:])
+            if snippet not in evidence:
+                evidence.append(snippet)
+        item = {"路径": key, "依据": " · ".join(evidence)[:190]}
+        if args.source is not None:
+            item["来源"] = excerpt(fields["来源"], args.source.casefold())
+        if args.license is not None:
+            item["授权"] = fields["授权"]
+        hits.append((-matched, -score, key, item))
+    names = {}
+    result = {"候选": [], "还有": False, "下一页": None, "超限": 0}
+    position = 0
+    for _, _, key, item in sorted(hits):
+        if not readable(root, key, names):
+            continue
+        position += 1
+        if position <= args.offset:
+            continue
+        # Reserve room for the actual continuation cursor and Windows CRLF.
+        next_page = {**result, "还有": True, "下一页": position}
+        if len(encode({**next_page, "候选": [item]})) + 2 > 2000:
+            result["超限"] += 1
+            continue
+        if (len(result["候选"]) == 5
+                or len(encode({**next_page, "候选": [*result["候选"], item]})) + 2 > 2000):
+            result.update({"还有": True, "下一页": position - 1})
+            break
+        result["候选"].append(item)
+    return result
 
 
-def save(path, original, text):
-    data = text.encode("utf-8")
-    if original and original.startswith(b"\xef\xbb\xbf"):
-        data = b"\xef\xbb\xbf" + data
-    if data == original:
-        return
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as staged:
-        temp = Path(staged.name)
-    try:
-        temp.write_bytes(data)
-        if read_index(path) != original:
-            raise ValueError("INDEX.md 同时被编辑，请重新读取后重试")
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
-
-
-def scan(root, original, lines, rows):
+def stats(args, root, loaded):
+    keys = {key for _, _, key, _ in rows(loaded)}
     found = discover(root)
-    added = sorted(found - rows.keys())
-    text = "".join(lines)
-    newline = "\r\n" if "\r\n" in text else "\n"
-    for key in added:
-        kind = category(key)
-        name = Path(key).stem
-        fields = (name, kind, f"{name}（{Path(key).suffix[1:].upper()}）", "", UNKNOWN, UNKNOWN)
-        if not text.endswith(newline):
-            text += newline
-        text += newline + f"## {key}" + newline
-        text += "".join(f"- {field}: {value}{newline}" for field, value in zip(FIELDS, fields))
-    save(root / "INDEX.md", original, text)
-    return {"新增": len(added), "现存": len(found), "缺失": sorted(rows.keys() - found)}
+    pending = sorted(found - keys)
+    missing = sorted(keys - found)
+    if args.listing:
+        entries = pending if args.listing == "pending" else missing
+        return {"总数": len(entries), "路径": entries[args.offset:args.offset + 10]}
+    selected = [(k, g, key) for k, g, key, _ in rows(loaded)
+                if (not args.type or args.type == k) and (not args.group or args.group == g)]
+    return {"类型数量": dict(Counter(k for k, _, _ in selected)),
+            "已收录": len(selected), "缺失": sum(key not in found for _, _, key in selected),
+            **pending_summary(pending)}
 
 
-def annotate(args, root, original, lines, rows):
-    if args.path not in rows:
-        raise ValueError(f"索引里没有 {args.path}")
-    row = rows[args.path]
-    field = "标签" if args.action == "tag" else args.field
-    index, old = row[field]
-    value = args.value.strip()
-    if not value or len(value.splitlines()) != 1:
-        raise ValueError("字段值须为一行非空文本")
-    if args.action == "tag":
-        tags = [tag.strip() for tag in old.split("、") if tag.strip()]
-        if value in tags:
-            return {"路径": args.path, field: old}
-        value = "、".join([*tags, value])
-    if field == "类型" and value not in (*CATEGORIES, "图片待分类", "音频待分类"):
-        raise ValueError(f"未知类型 {value}")
-    line = lines[index]
-    end = line[len(line.rstrip("\r\n")):]
-    lines[index] = f"- {field}: {value}{end}"
-    save(root / "INDEX.md", original, "".join(lines))
-    return {"路径": args.path, field: value}
+def parser():
+    p = argparse.ArgumentParser(description=__doc__)
+    commands = p.add_subparsers(dest="action", required=True)
+    for action in ("init", "scan", "recover", "assign", "search", "show", "stats", "tag", "set"):
+        c = commands.add_parser(action)
+        c.add_argument("library", type=Path)
+        if action in ("init", "scan"):
+            c.add_argument("--layout-confirmed", action="store_true")
+        if action in ("search", "stats", "assign"):
+            c.add_argument("--type", choices=CATEGORIES, required=action == "assign")
+            c.add_argument("--group", required=action == "assign")
+        if action == "search":
+            c.add_argument("--dir", dest="directory")
+            c.add_argument("--term", action="append", default=[])
+            c.add_argument("--fallback", action="append", default=[],
+                           help="首轮无结果时在相同硬条件内使用的备用词")
+            c.add_argument("--require", action="append", default=[])
+            c.add_argument("--offset", type=int, default=0)
+            c.add_argument("--source")
+            c.add_argument("--license")
+        if action == "stats":
+            c.add_argument("--list", dest="listing", choices=("pending", "missing"))
+            c.add_argument("--offset", type=int, default=0)
+        if action == "show":
+            c.add_argument("--path", required=True)
+            c.add_argument("--source", action="store_true")
+            c.add_argument("--license", action="store_true")
+        if action in ("assign", "set", "tag"):
+            c.add_argument("path")
+        if action == "set":
+            c.add_argument("field", choices=FIELDS)
+        if action in ("set", "tag"):
+            c.add_argument("value")
+    return p
 
 
 def run():
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="action", required=True)
-    for action in ("init", "scan", "candidates", "tag", "set"):
-        command = commands.add_parser(action)
-        command.add_argument("library", type=Path)
-        if action in ("scan", "init"):
-            command.add_argument("--layout-confirmed", action="store_true",
-                                 help="用户已明确选择了目录结构，可为现有素材夹建立索引")
-        if action == "candidates":
-            command.add_argument("--type")
-            command.add_argument("--path")
-        if action in ("tag", "set"):
-            command.add_argument("path")
-            if action == "set":
-                command.add_argument("field", choices=FIELDS)
-            command.add_argument("value")
-    args = parser.parse_args()
+    args = parser().parse_args()
     root = args.library.resolve()
     if args.action == "init":
         root.mkdir(parents=True, exist_ok=True)
-    path = root / "INDEX.md"
-    if args.action == "candidates":
-        raw = read_index(path)
-        if raw is None:
-            raise ValueError("请先扫描素材库以建立 INDEX.md")
-        _, rows = parse(raw)
-        results = []
-        names = {}
-        for key, row in rows.items():
-            if args.path is not None and key != args.path:
-                continue
-            fields = {field: cell[1] for field, cell in row.items()}
-            if (args.type is None or args.type == fields["类型"]) and readable(root, key, names):
-                results.append({"路径": key, **fields})
-        return results
+    if args.action in ("search", "show", "stats"):
+        manifest(root)
+        if args.action == "search":
+            loaded = books(root, args.type, args.group)
+            result = search(args, root, loaded, args.term)
+            if not result["候选"] and args.fallback and not args.offset:
+                result = search(args, root, loaded, args.fallback)
+            return result
+        loaded = books(root)
+        if args.action == "stats":
+            if args.offset < 0:
+                raise ValueError("offset 须为非负整数")
+            return stats(args, root, loaded)
+        row = lookup(loaded, args.path).rows[args.path]
+        if not readable(root, args.path, {}):
+            raise ValueError("素材文件当前不可读")
+        fields = ["名称", "类型", "描述", "标签"]
+        if args.source:
+            fields.append("来源")
+        if args.license:
+            fields.append("授权")
+        return {"路径": args.path, **{f: row[f][1] for f in fields}}
     with writing(root):
-        raw = read_index(path)
-        lines, rows = parse(raw)
-        if args.action in ("scan", "init"):
-            if raw is None and not args.layout_confirmed and any(
-                entry.name != ".webgal-librarian.lock" for entry in root.iterdir()
-            ):
-                raise ValueError("请先问用户：保持现有目录，只建索引，还是先看按类型整理文件夹的方案？"
-                                 "收到明确的目录选择后再继续。")
-            return scan(root, raw, lines, rows)
-        return annotate(args, root, raw, lines, rows)
+        if args.action == "recover":
+            return recover(root)
+        create = args.action in ("init", "scan")
+        manifest(root, create, create and args.layout_confirmed)
+        loaded = books(root)
+        if create:
+            return scan(root, loaded)
+        if args.action == "assign":
+            return assign(root, loaded, args.path, args.type, args.group)
+        if args.action == "set" and args.field == "类型":
+            if args.value not in CATEGORIES:
+                raise ValueError("未知类型")
+            current = lookup(loaded, args.path)
+            if current.path.parent.name == args.value:
+                return {"路径": args.path, "类型": args.value}
+            if args.value == "立绘":
+                raise ValueError("请用 assign --type 立绘 --group 角色名 指定归属")
+            return assign(root, loaded, args.path, args.value, "_通用")
+        book = lookup(loaded, args.path)
+        return edit(book, args.path, "标签" if args.action == "tag" else args.field,
+                    args.value, args.action == "tag")
 
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     try:
-        print(json.dumps(run(), ensure_ascii=False, indent=2))
+        print(encode(run()))
     except (OSError, ValueError) as error:
         sys.exit(str(error))

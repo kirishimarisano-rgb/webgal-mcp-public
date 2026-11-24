@@ -52,12 +52,49 @@ function makeEdit(scene, start, before, after) {
   };
 }
 
-function run({ mode, scene, projectId, needle, firstLine, lastLine = firstLine, before, after, receipt }) {
+function run({ mode, scene, projectId, needle, firstLine, lastLine = firstLine, before, after, receipt,
+  target, x, duration, cues }) {
   check(projectId && scene?.source === 'disk' && typeof scene.path === 'string'
     && validText(scene.text) && ['utf-8', 'utf-8-bom'].includes(scene.encoding), 'Use an original scene_read snapshot.');
   const raw = bytes(scene.text, scene.encoding);
   check(raw.length === scene.bytes && hash(raw) === scene.revision, 'Saved bytes disagree with scene_read.');
   const lines = linesOf(scene.text);
+  if (mode === 'bgm') {
+    check(Array.isArray(cues) && cues.length > 0, 'Supply music cues in saved line order.');
+    const edits = cues.map(({ line, before: anchorText, track }, index) => {
+      const anchor = lines[line - 1];
+      check(Number.isInteger(line) && anchor?.text && anchor.text === anchorText
+        && (index === 0 || line > cues[index - 1].line), 'Select distinct, ordered, exact anchor lines.');
+      check(typeof track === 'string' && track.trim() === track && track.length > 0
+        && validText(track) && !/[;\r\n]/u.test(track) && !/\s-/u.test(track),
+      'Use the verified music filename or none.');
+      const eol = lines[line - 2]?.eol || anchor.eol || '\n';
+      return { start: anchor.start, end: anchor.start, text: `bgm:${track} -next;${eol}` };
+    });
+    const first = cues[0].line;
+    const last = cues.at(-1).line;
+    const start = lines[first - 1].start;
+    const end = lines[last - 1].start + lines[last - 1].text.length;
+    const block = scene.text.slice(start, end);
+    const insertions = new Map(edits.map(edit => [edit.start, edit.text]));
+    const expanded = lines.slice(first - 1, last).map((line, i) =>
+      (insertions.get(line.start) ?? '') + line.text + (first + i < last ? line.eol : '')).join('');
+    const draft = run({ mode: 'draft', projectId, scene, firstLine: first, lastLine: last, before: block, after: expanded });
+    return { ...draft, operation: { ...draft.operation, edits },
+      candidateText: scene.text.slice(0, start) + expanded + scene.text.slice(end) };
+  }
+  if (mode === 'move') {
+    const anchor = lines[firstLine - 1];
+    check(Number.isInteger(firstLine) && anchor?.text && anchor.text === before,
+      'Select the exact saved line before which the figure moves.');
+    check(typeof target === 'string' && /^[\p{L}\p{N}_.-]+$/u.test(target),
+      'Supply the active figure ID or figure slot.');
+    check(Number.isFinite(x) && Number.isSafeInteger(duration) && duration > 0,
+      'Supply a finite destination x and a positive duration in milliseconds.');
+    const command = `setTransform:{"position":{"x":${x}}} -target=${target} -duration=${duration} -ease=easeOut -keep -next;`;
+    const eol = lines[firstLine - 2]?.eol || anchor.eol || '\n';
+    return run({ mode: 'draft', projectId, scene, firstLine, before, after: command + eol + anchor.text });
+  }
   if (mode === 'find') {
     check(typeof needle === 'string' && needle.length > 0, 'Supply a nonempty literal.');
     return lines.flatMap((line, i) => line.text.includes(needle)

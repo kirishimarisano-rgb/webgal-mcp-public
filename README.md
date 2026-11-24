@@ -4,10 +4,11 @@
 
 ## 环境要求
 
-- **制作或编辑游戏（Creator / Editor）**需要 Windows 或 Linux、Git、Node.js **24.x** 和 WebGAL Terre，客户端可选 Codex 或 DSH（Linux 导入 Live2D 模型包另需 Python 3 与支持 `renameat2` 的内核/文件系统；下方本机版本以已真机验收的 Windows 环境为例）。
-- **只管理素材库（Librarian）**需要 Codex 或 DSH，以及 Python **3.10 或更高版本**。
+- **制作或编辑游戏（Creator / Editor）**需要 Windows 或 Linux、Git、Node.js **24.x** 和 WebGAL Terre，客户端可选 Codex 或 DSH。
+- **在 Linux 上导入 Live2D 模型包**还需要 Python 3，以及支持 `renameat2(RENAME_NOREPLACE)` 的内核和文件系统。
+- **使用共享素材库**需要 Python **3.10 或更高版本**，包括 Creator 和 Editor 通过 Librarian 查找素材时。
 
-本机版本供安装时参考：
+下表列出本机验证时使用的 Windows 环境。
 
 | 工具 | 本机版本 |
 | --- | --- |
@@ -49,5 +50,9 @@
 ## 用 Librarian 管理共享素材库
 
 > 请用 webgal-librarian Skill 扫描我的素材文件夹，保持目录原样，只建索引。帮我找一首适合「放学后在车站告别」的 BGM。
+
+建库后，从根目录的 `INDEX.md` 可以打开各类素材分册，手动补充描述和标签。立绘通常按角色分册。每次搜索最多向 agent 返回 5 个候选，合计不超过 2,000 字符。只有你明确询问来源、授权或指定相关条件时，对应字段才会进入对话。[分册格式](skills/webgal-librarian/references/index-format.md)
+
+安装 Librarian 并为项目指定素材库后，Creator 会在你确认剧本后自动选材。之后即使另开对话，也可以直接对 Editor 说「把这句台词前的表情换得更犹豫一点，沿用同一套服装和姿态」，它会沿用该项目的库和选材记录。
 
 [工具参考](docs/tool-reference.md) · [许可证：PolyForm Noncommercial 1.0.0](LICENSE)
